@@ -25,7 +25,7 @@ renderSidebar();
 <?php if ($expired > 0): ?>
 <div class="alert alert-danger auto-hide" style="transition:opacity 0.3s,transform 0.3s;">
   <i data-lucide="alert-triangle"></i>
-  <strong><?= $expired ?> batches have expired</strong> — Please review and dispose of expired stock immediately.
+  <strong><?= $expired ?> medicine<?= $expired == 1 ? '' : 's' ?> have expired stock</strong> — Please review and dispose of expired stock immediately.
   <a href="inventory.php" style="color:inherit;margin-left:auto;font-weight:700;">View →</a>
 </div>
 <?php endif; ?>
@@ -33,7 +33,7 @@ renderSidebar();
 <?php if ($expiringSoon > 0): ?>
 <div class="alert alert-warning auto-hide" style="transition:opacity 0.3s,transform 0.3s;">
   <i data-lucide="clock"></i>
-  <strong><?= $expiringSoon ?> batches expire within 30 days</strong> — Prioritize selling these items (FEFO).
+  <strong><?= $expiringSoon ?> medicine<?= $expiringSoon == 1 ? '' : 's' ?> expire within 30 days</strong> — Prioritize selling these items (FEFO).
   <a href="inventory.php" style="color:inherit;margin-left:auto;font-weight:700;">View →</a>
 </div>
 <?php endif; ?>

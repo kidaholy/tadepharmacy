@@ -258,17 +258,18 @@ function dashboardSnapshot(PDO $pdo): array {
             SELECT m.id FROM medicines m
             LEFT JOIN batches b ON b.medicine_id = m.id
             GROUP BY m.id
-            HAVING COALESCE(SUM(b.quantity), 0) <= m.reorder_level
+            HAVING COALESCE(SUM(b.quantity), 0) > 0
+               AND COALESCE(SUM(b.quantity), 0) <= m.reorder_level
         ) AS low_meds
     ")->fetchColumn();
 
     $expiringSoon = (int) scalarBind($pdo, "
-        SELECT COUNT(*) FROM batches
+        SELECT COUNT(DISTINCT medicine_id) FROM batches
         WHERE expiry_date BETWEEN ? AND date(?, '+30 days') AND quantity > 0
           AND " . expiryTrackedSql() . "
     ", [$today, $today]);
     $expired = (int) scalarBind($pdo, "
-        SELECT COUNT(*) FROM batches
+        SELECT COUNT(DISTINCT medicine_id) FROM batches
         WHERE expiry_date < ? AND quantity > 0 AND " . expiryTrackedSql() . "
     ", [$today]);
 
@@ -301,7 +302,7 @@ function dashboardSnapshot(PDO $pdo): array {
         FROM medicines m
         LEFT JOIN batches b ON b.medicine_id = m.id
         GROUP BY m.id
-        HAVING stock <= m.reorder_level
+        HAVING COALESCE(SUM(b.quantity), 0) > 0 AND COALESCE(SUM(b.quantity), 0) <= m.reorder_level
         ORDER BY stock ASC
         LIMIT 6
     ")->fetchAll();
