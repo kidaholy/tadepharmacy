@@ -12,12 +12,6 @@ require_once __DIR__ . '/notifications_lib.php';
 
 $pdo = getDB();
 
-// Run daily credit alerts once per day
-if (getSetting('last_credit_alert_date', '') !== date('Y-m-d')) {
-    runDailyCreditAlerts($pdo);
-    $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_credit_alert_date', ?)")->execute([date('Y-m-d')]);
-}
-
 // KPIs
 $todayRevenue = $pdo->query("SELECT COALESCE(SUM(total_amount - discount), 0) FROM sales WHERE date(created_at) = date('now')")->fetchColumn();
 $todaySales   = $pdo->query("SELECT COUNT(*) FROM sales WHERE date(created_at) = date('now')")->fetchColumn();

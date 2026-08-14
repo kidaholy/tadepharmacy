@@ -1,4 +1,6 @@
 <?php
+date_default_timezone_set('Africa/Addis_Ababa');
+
 define('DB_PATH', __DIR__ . '/data/pharmacy.db');
 define('PHARMACY_LOGO_PATH', __DIR__ . '/public/tade pharmacy.jpeg');
 
@@ -244,6 +246,9 @@ function initDB(PDO $pdo): void {
         'currency'         => 'ETB',
         'tax_rate'         => '0',
         'receipt_footer'   => 'Thank you for choosing TADE PHARMACY!',
+        'telegram_daily_report' => '1',
+        'telegram_report_time_1' => '09:00',
+        'telegram_report_time_2' => '18:00',
     ];
     $stmt = $pdo->prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
     foreach ($defaults as $k => $v) {

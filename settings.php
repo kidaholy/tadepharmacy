@@ -4,6 +4,7 @@ require_once __DIR__ . '/layout.php';
 $pdo = getDB();
 $msg = '';
 $error = '';
+$telegramChats = [];
 require_once __DIR__ . '/notifications_lib.php';
 
 $fields = [
@@ -17,9 +18,12 @@ $fields = [
 ];
 
 $notifyFields = [
-    'telegram_enabled'   => ['label' => 'Enable Telegram Alerts', 'type' => 'checkbox'],
-    'telegram_bot_token' => ['label' => 'Telegram Bot Token',     'type' => 'text'],
-    'telegram_chat_id'   => ['label' => 'Telegram Chat ID',       'type' => 'text'],
+    'telegram_enabled'      => ['label' => 'Enable Telegram Alerts', 'type' => 'checkbox'],
+    'telegram_bot_token'    => ['label' => 'Telegram Bot Token',     'type' => 'text'],
+    'telegram_chat_id'      => ['label' => 'Telegram Chat ID',       'type' => 'text'],
+    'telegram_daily_report' => ['label' => 'Send daily report twice a day', 'type' => 'checkbox', 'default' => '1'],
+    'telegram_report_time_1'=> ['label' => 'Morning report time',    'type' => 'time', 'default' => '09:00'],
+    'telegram_report_time_2'=> ['label' => 'Evening report time',    'type' => 'time', 'default' => '18:00'],
 ];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -47,13 +51,57 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $error = implode(' · ', $parts);
             }
         }
+    } elseif (($_POST['act'] ?? '') === 'find_telegram_chat') {
+        $found = findTelegramChats();
+        if (empty($found['ok'])) {
+            $error = $found['error'] ?? 'Could not find Telegram chats.';
+        } elseif (empty($found['chats'])) {
+            $error = 'No chat found yet. Open your bot in Telegram (not BotFather), tap Start, send hello, then click Find chat ID again.';
+        } else {
+            $telegramChats = $found['chats'];
+            if (count($telegramChats) === 1) {
+                $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('telegram_chat_id', ?)")
+                    ->execute([$telegramChats[0]['id']]);
+                clearSettingsCache();
+                $msg = 'Chat ID saved: ' . $telegramChats[0]['id'] . ' (' . $telegramChats[0]['name'] . '). You can send a test now.';
+            } else {
+                $msg = 'Select a chat ID below, then save.';
+            }
+        }
+    } elseif (($_POST['act'] ?? '') === 'use_telegram_chat') {
+        $chatId = preg_replace('/\s+/', '', trim($_POST['chat_id'] ?? ''));
+        if ($chatId === '' || !preg_match('/^-?\d+$/', $chatId)) {
+            $error = 'Invalid chat ID.';
+        } else {
+            $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('telegram_chat_id', ?)")
+                ->execute([$chatId]);
+            clearSettingsCache();
+            $msg = 'Chat ID saved: ' . $chatId . '. You can send a test now.';
+        }
+    } elseif (($_POST['act'] ?? '') === 'send_daily_report') {
+        $results = sendDailyReportNow($pdo, 'manual');
+        if (!$results) {
+            $error = 'Enable Telegram first, save settings, then send a daily report.';
+        } else {
+            $tg = $results['telegram'] ?? ['ok' => false, 'error' => 'failed'];
+            if (!empty($tg['ok'])) {
+                $msg = 'Daily report sent to Telegram.';
+            } else {
+                $error = 'Telegram: ' . ($tg['error'] ?? 'failed');
+            }
+        }
     } else {
+        $form = $_POST['form'] ?? '';
+        $toSave = $form === 'notify' ? $notifyFields : $fields;
         $stmt = $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
-        foreach (array_merge($fields, $notifyFields) as $key => $def) {
+        foreach ($toSave as $key => $def) {
             if ($def['type'] === 'checkbox') {
-                $val = isset($_POST[$key]) ? '1' : '0';
+                $val = isset($_POST[$key]) && $_POST[$key] !== '0' ? '1' : '0';
             } else {
                 $val = trim($_POST[$key] ?? '');
+            }
+            if (($def['type'] ?? '') === 'time' && !preg_match('/^\d{2}:\d{2}$/', $val)) {
+                $val = $def['default'] ?? '09:00';
             }
             $stmt->execute([$key, $val]);
         }
@@ -65,7 +113,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 // Reload
 $settings = [];
 foreach (array_merge($fields, $notifyFields) as $key => $def) {
-    $settings[$key] = getSetting($key, $def['type'] === 'checkbox' ? '0' : '');
+    $fallback = $def['default'] ?? ($def['type'] === 'checkbox' ? '0' : '');
+    $settings[$key] = getSetting($key, $fallback);
 }
 
 // DB stats
@@ -99,6 +148,7 @@ renderSidebar();
   <div class="card">
     <div class="card-header"><span class="card-title">Pharmacy Information</span></div>
     <form method="POST">
+      <input type="hidden" name="form" value="pharmacy">
       <?php foreach ($fields as $key => $def): ?>
       <div class="form-group">
         <label><?= htmlspecialchars($def['label']) ?><?= isset($def['hint']) ? ' <span style="color:var(--text-300);font-weight:400;text-transform:none;font-size:11px;">(' . $def['hint'] . ')</span>' : '' ?></label>
@@ -108,11 +158,6 @@ renderSidebar();
           <input type="<?= $def['type'] ?>" name="<?= $key ?>" value="<?= htmlspecialchars($settings[$key]) ?>">
         <?php endif; ?>
       </div>
-      <?php endforeach; ?>
-      <?php foreach ($notifyFields as $key => $def): ?>
-      <?php if ($def['type'] === 'checkbox'): ?>
-      <input type="hidden" name="<?= $key ?>" value="0">
-      <?php endif; ?>
       <?php endforeach; ?>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary"><i data-lucide="save"></i> Save Settings</button>
@@ -125,6 +170,7 @@ renderSidebar();
   <div class="card">
     <div class="card-header"><span class="card-title">Notification Settings</span></div>
     <form method="POST">
+      <input type="hidden" name="form" value="notify">
       <?php foreach ($notifyFields as $key => $def): ?>
       <div class="form-group">
         <?php if ($def['type'] === 'checkbox'): ?>
@@ -138,18 +184,41 @@ renderSidebar();
         <?php endif; ?>
       </div>
       <?php endforeach; ?>
-      <?php foreach ($fields as $key => $def): ?>
-      <input type="hidden" name="<?= $key ?>" value="<?= htmlspecialchars($settings[$key]) ?>">
-      <?php endforeach; ?>
       <div class="form-actions">
         <button type="submit" class="btn btn-primary"><i data-lucide="bell"></i> Save Notifications</button>
       </div>
+    </form>
+    <form method="POST" style="margin-top:10px;display:flex;gap:10px;flex-wrap:wrap;">
+      <input type="hidden" name="act" value="find_telegram_chat">
+      <button type="submit" class="btn btn-ghost"><i data-lucide="search"></i> Find chat ID</button>
     </form>
     <form method="POST" style="margin-top:10px;">
       <input type="hidden" name="act" value="test_notify">
       <button type="submit" class="btn btn-ghost"><i data-lucide="send"></i> Send test notification</button>
     </form>
-    <p style="font-size:12px;color:var(--text-300);margin-top:12px;">Alerts: new credit sale, credit due tomorrow, overdue credit, low stock, out of stock. Save settings first, then send a test. Telegram needs a BotFather token and chat ID.</p>
+    <form method="POST" style="margin-top:10px;">
+      <input type="hidden" name="act" value="send_daily_report">
+      <button type="submit" class="btn btn-ghost"><i data-lucide="clipboard-list"></i> Send daily report now</button>
+    </form>
+    <?php if ($telegramChats): ?>
+    <div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;">
+      <?php foreach ($telegramChats as $chat): ?>
+      <form method="POST" style="display:flex;justify-content:space-between;align-items:center;gap:10px;padding:10px;border:1px solid var(--border);border-radius:8px;">
+        <input type="hidden" name="act" value="use_telegram_chat">
+        <input type="hidden" name="chat_id" value="<?= htmlspecialchars($chat['id']) ?>">
+        <div>
+          <strong><?= htmlspecialchars($chat['name']) ?></strong>
+          <div style="font-size:12px;color:var(--text-300);"><?= htmlspecialchars($chat['type']) ?> · <?= htmlspecialchars($chat['id']) ?></div>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Use this ID</button>
+      </form>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+    <p style="font-size:12px;color:var(--text-300);margin-top:12px;">
+      Instant alerts: new credit sale, credit due tomorrow, overdue credit, low stock, out of stock.
+      Daily reports (sales, credit, inventory, top products) go out at the two times above whenever the system is open.
+    </p>
   </div>
 
   <!-- DB Stats & Info -->

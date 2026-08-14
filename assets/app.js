@@ -72,3 +72,9 @@ if (document.readyState === 'loading') {
   initPage();
   window.addEventListener('load', () => refreshIcons());
 }
+
+function pingNotificationScheduler() {
+  fetch('notify_tick.php', { credentials: 'same-origin' }).catch(() => {});
+}
+pingNotificationScheduler();
+setInterval(pingNotificationScheduler, 120000);
