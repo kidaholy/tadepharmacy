@@ -6,21 +6,70 @@ function renderReportExtras(): void {
     echo '<script src="assets/reports.js" defer></script>';
 }
 
-function renderReportNav(string $activePage): void {
+function renderReportNav(string $activePage, array $dates = [], array $filters = []): void {
+    $qs = $dates ? reportQueryString($dates, $filters) : '';
+    $suffix = $qs !== '' ? ('?' . $qs) : '';
     echo '<div class="report-nav no-print mb-20">';
     foreach (reportNavItems() as $item) {
         $active = ($activePage === $item['page']) ? ' active' : '';
-        echo '<a href="' . $item['page'] . '.php" class="report-nav-item' . $active . '">';
+        echo '<a href="' . $item['page'] . '.php' . $suffix . '" class="report-nav-item' . $active . '">';
         echo '<i data-lucide="' . $item['icon'] . '"></i> ' . htmlspecialchars($item['label']);
         echo '</a>';
     }
     echo '</div>';
 }
 
+function reportActiveFilterChips(array $dates, array $filters, array $options): array {
+    $chips = [];
+    $chips[] = 'Period: ' . $dates['label'];
+    if (!empty($filters['product'])) {
+        foreach ($options['products'] as $p) {
+            if ((int)$p['id'] === (int)$filters['product']) {
+                $chips[] = 'Product: ' . $p['name'];
+                break;
+            }
+        }
+    }
+    if (!empty($filters['category'])) {
+        foreach ($options['categories'] as $c) {
+            if ((int)$c['id'] === (int)$filters['category']) {
+                $chips[] = 'Category: ' . $c['name'];
+                break;
+            }
+        }
+    }
+    if (!empty($filters['supplier'])) {
+        foreach ($options['suppliers'] as $s) {
+            if ((int)$s['id'] === (int)$filters['supplier']) {
+                $chips[] = 'Supplier: ' . $s['name'];
+                break;
+            }
+        }
+    }
+    if ($filters['customer'] !== '') $chips[] = 'Customer: ' . $filters['customer'];
+    if (!empty($filters['cashier'])) {
+        foreach ($options['cashiers'] as $u) {
+            if ((int)$u['id'] === (int)$filters['cashier']) {
+                $chips[] = 'Cashier: ' . $u['full_name'];
+                break;
+            }
+        }
+    }
+    if ($filters['payment_method'] !== '') {
+        $chips[] = 'Payment: ' . (reportPaymentMethods()[$filters['payment_method']] ?? $filters['payment_method']);
+    }
+    if ($filters['sales_type'] !== '') $chips[] = 'Type: ' . ucfirst($filters['sales_type']);
+    return $chips;
+}
+
 function renderReportFilters(array $dates, array $filters, array $options, string $formAction = ''): void {
     $presets = reportDatePresets();
     $payments = reportPaymentMethods();
-    $qs = reportQueryString($dates, $filters);
+    $isCustom = $dates['preset'] === 'custom';
+    $chips = reportActiveFilterChips($dates, $filters, $options);
+    $hasExtra = $filters['product'] || $filters['category'] || $filters['supplier']
+        || $filters['customer'] !== '' || $filters['cashier'] || $filters['payment_method'] !== ''
+        || $filters['sales_type'] !== '';
     ?>
 <div class="card mb-20 no-print report-filters-card">
   <form method="GET" action="<?= htmlspecialchars($formAction) ?>" id="reportFilterForm">
@@ -33,13 +82,13 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
           <?php endforeach; ?>
         </select>
       </div>
-      <div class="form-group report-custom-dates" id="customDateFrom" style="<?= $dates['preset'] === 'custom' ? '' : 'display:none;' ?>">
+      <div class="form-group report-custom-dates" id="customDateFrom" style="<?= $isCustom ? '' : 'display:none;' ?>">
         <label>Start Date</label>
-        <input type="date" name="from" value="<?= htmlspecialchars($dates['from']) ?>">
+        <input type="date" name="from" id="reportDateFrom" value="<?= htmlspecialchars($dates['from']) ?>" <?= $isCustom ? '' : 'disabled' ?>>
       </div>
-      <div class="form-group report-custom-dates" id="customDateTo" style="<?= $dates['preset'] === 'custom' ? '' : 'display:none;' ?>">
+      <div class="form-group report-custom-dates" id="customDateTo" style="<?= $isCustom ? '' : 'display:none;' ?>">
         <label>End Date</label>
-        <input type="date" name="to" value="<?= htmlspecialchars($dates['to']) ?>">
+        <input type="date" name="to" id="reportDateTo" value="<?= htmlspecialchars($dates['to']) ?>" <?= $isCustom ? '' : 'disabled' ?>>
       </div>
       <div class="form-group">
         <label>Product</label>
@@ -116,6 +165,14 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
       <?php renderReportExportButtons($dates, $filters); ?>
     </div>
   </form>
+  <div class="report-active-filters" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
+    <?php foreach ($chips as $chip): ?>
+    <span class="badge badge-blue" style="font-weight:500;"><?= htmlspecialchars($chip) ?></span>
+    <?php endforeach; ?>
+    <?php if ($hasExtra): ?>
+    <a href="<?= htmlspecialchars(basename($_SERVER['PHP_SELF'])) ?>" style="font-size:12px;align-self:center;">Clear filters</a>
+    <?php endif; ?>
+  </div>
 </div>
     <?php
 }

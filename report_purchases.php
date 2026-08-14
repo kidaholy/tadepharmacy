@@ -76,7 +76,7 @@ renderReportExtras();
 <div class="main-content">
 <?php renderTopbar('Purchase Reports', 'Purchases, payables, payments & returns'); ?>
 <div class="page-body">
-<?php renderReportNav('report_purchases'); ?>
+<?php renderReportNav('report_purchases', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options, 'report_purchases.php'); ?>
 
 <div class="admin-tabs no-print">

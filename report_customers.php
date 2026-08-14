@@ -8,23 +8,33 @@ $page = max(1, (int)($_GET['page'] ?? 1));
 $perPage = 50;
 $from = $dates['from'];
 $to   = $dates['to'];
+$ctx = reportBuildSalesContext($filters);
+$extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+$dayExpr = reportLocalDateExpr('s');
 
 $stmt = $pdo->prepare("
-    SELECT s.customer_name,
-           COUNT(*) AS visits,
-           SUM(s.total_amount - s.discount) AS spent,
-           SUM(s.paid_amount) AS paid,
-           AVG(s.total_amount - s.discount) AS avg_order,
-           MIN(s.created_at) AS first_visit,
-           MAX(s.created_at) AS last_visit
-    FROM sales s
-    WHERE date(s.created_at) BETWEEN ? AND ?
-      AND s.customer_name IS NOT NULL AND TRIM(s.customer_name) != ''
-      AND s.customer_name != 'Walk-in Customer'
-    GROUP BY s.customer_name
+    SELECT label AS customer_name, COUNT(*) AS visits, SUM(net) AS spent,
+           SUM(paid) AS paid, AVG(net) AS avg_order,
+           MIN(first_at) AS first_visit, MAX(last_at) AS last_visit
+    FROM (
+        SELECT DISTINCT s.id,
+               COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name) AS label,
+               (s.total_amount - s.discount) AS net,
+               s.paid_amount AS paid,
+               s.created_at AS first_at,
+               s.created_at AS last_at
+        FROM sales s
+        {$ctx['joins']}
+        WHERE $dayExpr BETWEEN ? AND ?
+          $extra
+          AND COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name) IS NOT NULL
+          AND TRIM(COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name)) != ''
+          AND COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name) != 'Walk-in Customer'
+    ) t
+    GROUP BY label
     ORDER BY spent DESC
 ");
-$stmt->execute([$from, $to]);
+$stmt->execute(array_merge([$from, $to], $ctx['params']));
 $all = $stmt->fetchAll();
 $totalPages = max(1, (int)ceil(count($all) / $perPage));
 $customers = array_slice($all, ($page - 1) * $perPage, $perPage);
@@ -43,7 +53,7 @@ renderSidebar();
 <div class="main-content">
 <?php renderTopbar('Customer Reports', 'Customer analytics & spending'); ?>
 <div class="page-body">
-<?php renderReportNav('report_customers'); ?>
+<?php renderReportNav('report_customers', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options); ?>
 <?php renderReportMeta('Customer Analytics', $dates); ?>
 

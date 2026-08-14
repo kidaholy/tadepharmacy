@@ -12,13 +12,14 @@ $to   = $dates['to'];
 $ctx  = reportBuildSalesContext($filters);
 $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
 $params = array_merge([$from, $to], $ctx['params']);
+$dayExpr = reportLocalDateExpr('s');
 
-function salesGrouped(PDO $pdo, string $groupExpr, string $labelExpr, array $params, string $extra, string $joins): array {
+function salesGrouped(PDO $pdo, string $labelExpr, array $params, string $extra, string $joins, string $dayExpr): array {
     $stmt = $pdo->prepare("
         SELECT label, COUNT(*) AS orders, SUM(net) AS revenue FROM (
             SELECT DISTINCT s.id, $labelExpr AS label, (s.total_amount - s.discount) AS net
             FROM sales s $joins
-            WHERE date(s.created_at) BETWEEN ? AND ? $extra
+            WHERE $dayExpr BETWEEN ? AND ? $extra
         ) t GROUP BY label ORDER BY revenue DESC
     ");
     $stmt->execute($params);
@@ -28,44 +29,34 @@ function salesGrouped(PDO $pdo, string $groupExpr, string $labelExpr, array $par
 $reports = [];
 switch ($view) {
     case 'weekly':
-        $reports = salesGrouped($pdo, "strftime('%Y-W%W', s.created_at)", "strftime('%Y Week %W', s.created_at)", $params, $extra, $ctx['joins']);
+        $reports = salesGrouped($pdo, "strftime('%Y Week %W', datetime(s.created_at, '+3 hours'))", $params, $extra, $ctx['joins'], $dayExpr);
         $title = 'Weekly Sales';
         break;
     case 'monthly':
-        $reports = salesGrouped($pdo, "strftime('%Y-%m', s.created_at)", "strftime('%b %Y', s.created_at)", $params, $extra, $ctx['joins']);
+        $reports = salesGrouped($pdo, "strftime('%b %Y', datetime(s.created_at, '+3 hours'))", $params, $extra, $ctx['joins'], $dayExpr);
         $title = 'Monthly Sales';
         break;
     case 'yearly':
-        $reports = salesGrouped($pdo, "strftime('%Y', s.created_at)", "strftime('%Y', s.created_at)", $params, $extra, $ctx['joins']);
+        $reports = salesGrouped($pdo, "strftime('%Y', datetime(s.created_at, '+3 hours'))", $params, $extra, $ctx['joins'], $dayExpr);
         $title = 'Yearly Sales';
         break;
     case 'hourly':
-        $reports = salesGrouped($pdo, "strftime('%H', s.created_at)", "strftime('%H:00', s.created_at) || ' – ' || strftime('%H:59', s.created_at)", $params, $extra, $ctx['joins']);
+        $reports = salesGrouped($pdo, "strftime('%H:00', datetime(s.created_at, '+3 hours')) || ' – ' || strftime('%H:59', datetime(s.created_at, '+3 hours'))", $params, $extra, $ctx['joins'], $dayExpr);
         $title = 'Hourly Sales';
         break;
     case 'cashier':
-        $stmt = $pdo->prepare("
-            SELECT COALESCE(u.full_name, 'Unknown') AS label, COUNT(DISTINCT s.id) AS orders,
-                   COALESCE(SUM(s.total_amount - s.discount), 0) AS revenue
-            FROM sales s LEFT JOIN users u ON u.id = s.user_id {$ctx['joins']}
-            WHERE date(s.created_at) BETWEEN ? AND ? $extra
-            GROUP BY s.user_id ORDER BY revenue DESC
-        ");
-        $stmt->execute($params);
-        $reports = $stmt->fetchAll();
+        $reports = salesGrouped($pdo, "COALESCE(u.full_name, 'Unknown')", $params, $extra, $ctx['joins'] . "\nLEFT JOIN users u ON u.id = s.user_id", $dayExpr);
         $title = 'Sales by Cashier';
         break;
     case 'customer':
-        $stmt = $pdo->prepare("
-            SELECT s.customer_name AS label, COUNT(*) AS orders,
-                   SUM(s.total_amount - s.discount) AS revenue
-            FROM sales s {$ctx['joins']}
-            WHERE date(s.created_at) BETWEEN ? AND ? $extra
-              AND s.customer_name IS NOT NULL AND TRIM(s.customer_name) != ''
-            GROUP BY s.customer_name ORDER BY revenue DESC LIMIT 100
-        ");
-        $stmt->execute($params);
-        $reports = $stmt->fetchAll();
+        $reports = salesGrouped(
+            $pdo,
+            "COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name, 'Unknown')",
+            $params,
+            $extra . " AND COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name) IS NOT NULL AND TRIM(COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name)) != ''",
+            $ctx['joins'],
+            $dayExpr
+        );
         $title = 'Sales by Customer';
         break;
     case 'product':
@@ -78,21 +69,22 @@ switch ($view) {
         $title = 'Sales by Category';
         break;
     case 'supplier':
+        $itemCtx = reportItemFilterContext($filters, $from, $to);
         $stmt = $pdo->prepare("
             SELECT COALESCE(sup.name, 'Unknown') AS label, SUM(si.quantity) AS orders,
                    SUM(si.subtotal) AS revenue
-            FROM sale_items si JOIN sales s ON s.id = si.sale_id
-            JOIN batches b ON b.id = si.batch_id
+            FROM sale_items si
+            {$itemCtx['joins']}
             LEFT JOIN suppliers sup ON sup.id = b.supplier_id
-            WHERE date(s.created_at) BETWEEN ? AND ?
+            WHERE {$itemCtx['where']}
             GROUP BY b.supplier_id ORDER BY revenue DESC
         ");
-        $stmt->execute([$from, $to]);
+        $stmt->execute($itemCtx['params']);
         $reports = $stmt->fetchAll();
         $title = 'Sales by Supplier';
         break;
     default:
-        $reports = salesGrouped($pdo, 'date(s.created_at)', 'date(s.created_at)', $params, $extra, $ctx['joins']);
+        $reports = salesGrouped($pdo, $dayExpr, $params, $extra, $ctx['joins'], $dayExpr);
         $title = 'Daily Sales';
         $view = 'daily';
 }
@@ -110,7 +102,7 @@ renderSidebar();
 <div class="main-content">
 <?php renderTopbar('Sales Reports', $title); ?>
 <div class="page-body">
-<?php renderReportNav('report_sales'); ?>
+<?php renderReportNav('report_sales', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options); ?>
 <?php renderReportMeta($title, $dates); ?>
 

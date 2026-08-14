@@ -25,25 +25,29 @@ $stockRetail  = $kpis['inventory_retail'];
 
 $from = $dates['from'];
 $to   = $dates['to'];
+$dayExpr = reportLocalDateExpr('s');
+$saleSub = reportFilteredSalesSubquery($filters, $from, $to, "s.id, $dayExpr AS day, (s.total_amount - s.discount) AS net, s.discount");
+$itemCtx = reportItemFilterContext($filters, $from, $to);
 
 $dailyRows = $pdo->prepare("
     SELECT d.day, d.txn, d.rev, d.disc, COALESCE(u.units, 0) AS units
     FROM (
-      SELECT date(created_at) AS day, COUNT(*) AS txn,
-             COALESCE(SUM(total_amount - discount), 0) AS rev,
+      SELECT day, COUNT(*) AS txn,
+             COALESCE(SUM(net), 0) AS rev,
              COALESCE(SUM(discount), 0) AS disc
-      FROM sales WHERE date(created_at) BETWEEN ? AND ?
+      FROM ({$saleSub['sql']}) t
       GROUP BY day
     ) d
     LEFT JOIN (
-      SELECT date(s.created_at) AS day, SUM(si.quantity) AS units
-      FROM sale_items si JOIN sales s ON s.id = si.sale_id
-      WHERE date(s.created_at) BETWEEN ? AND ?
+      SELECT " . reportLocalDateExpr('s') . " AS day, SUM(si.quantity) AS units
+      FROM sale_items si
+      {$itemCtx['joins']}
+      WHERE {$itemCtx['where']}
       GROUP BY day
     ) u ON u.day = d.day
     ORDER BY d.day DESC
 ");
-$dailyRows->execute([$from, $to, $from, $to]);
+$dailyRows->execute(array_merge($saleSub['params'], $itemCtx['params']));
 $dailyRows = $dailyRows->fetchAll();
 
 $expiryBatches = $pdo->query("
@@ -67,30 +71,45 @@ $slowMovers = $pdo->prepare("
            COALESCE(SUM(b.quantity * b.purchase_price), 0) AS cost_value
     FROM medicines m JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
     WHERE m.id NOT IN (
-      SELECT DISTINCT si.medicine_id FROM sale_items si JOIN sales s ON s.id = si.sale_id
-      WHERE date(s.created_at) BETWEEN ? AND ?
+      SELECT DISTINCT si.medicine_id FROM sale_items si
+      {$itemCtx['joins']}
+      WHERE {$itemCtx['where']}
     ) GROUP BY m.id ORDER BY cost_value DESC LIMIT 10
 ");
-$slowMovers->execute([$from, $to]);
+$slowMovers->execute($itemCtx['params']);
 $slowData = $slowMovers->fetchAll();
 
+$custCtx = reportBuildSalesContext($filters);
+$custExtra = $custCtx['where'] ? ' AND ' . implode(' AND ', $custCtx['where']) : '';
 $topCust = $pdo->prepare("
-    SELECT customer_name, COUNT(*) AS visits, SUM(total_amount - discount) AS spent
-    FROM sales WHERE date(created_at) BETWEEN ? AND ?
-      AND customer_name IS NOT NULL AND TRIM(customer_name) != ''
-    GROUP BY customer_name ORDER BY spent DESC LIMIT 10
+    SELECT label AS customer_name, COUNT(*) AS visits, SUM(net) AS spent
+    FROM (
+      SELECT DISTINCT s.id,
+             COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name) AS label,
+             (s.total_amount - s.discount) AS net
+      FROM sales s
+      {$custCtx['joins']}
+      WHERE $dayExpr BETWEEN ? AND ?
+        $custExtra
+        AND COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name) IS NOT NULL
+        AND TRIM(COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name)) != ''
+    ) t
+    GROUP BY label ORDER BY spent DESC LIMIT 10
 ");
-$topCust->execute([$from, $to]);
+$topCust->execute(array_merge([$from, $to], $custCtx['params']));
 $custData = $topCust->fetchAll();
 
 $supPurch = $pdo->prepare("
     SELECT COALESCE(s.name, 'Unknown') AS supplier, COUNT(p.id) AS orders,
-           COALESCE(SUM(p.total_amount), 0) AS total
+           COALESCE(SUM(COALESCE(p.grand_total, p.total_amount)), 0) AS total
     FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id
-    WHERE date(p.created_at) BETWEEN ? AND ?
+    WHERE date(COALESCE(p.purchase_date, p.created_at)) BETWEEN ? AND ?
+      " . (!empty($filters['supplier']) ? ' AND p.supplier_id = ?' : '') . "
     GROUP BY p.supplier_id ORDER BY total DESC
 ");
-$supPurch->execute([$from, $to]);
+$supParams = [$from, $to];
+if (!empty($filters['supplier'])) $supParams[] = (int)$filters['supplier'];
+$supPurch->execute($supParams);
 $supData = $supPurch->fetchAll();
 
 $chartDailyLabels = array_map(fn($r) => date('M j', strtotime($r['day'])), $daily);
@@ -109,7 +128,7 @@ renderSidebar();
 <?php renderTopbar('Reports', 'Business intelligence overview'); ?>
 <div class="page-body">
 
-<?php renderReportNav('reports'); ?>
+<?php renderReportNav('reports', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options); ?>
 <?php renderReportMeta('Overview Dashboard', $dates); ?>
 <?php renderInsightsCard($insights); ?>

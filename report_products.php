@@ -41,7 +41,7 @@ renderSidebar();
 <div class="main-content">
 <?php renderTopbar('Product Reports', 'Performance, best sellers & comparison'); ?>
 <div class="page-body">
-<?php renderReportNav('report_products'); ?>
+<?php renderReportNav('report_products', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options); ?>
 
 <div class="report-view-tabs no-print mb-20">

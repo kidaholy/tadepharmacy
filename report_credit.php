@@ -25,7 +25,7 @@ $dueMonth = array_filter($outstanding, fn($r) => $r['credit_due_date'] && $r['cr
 $collected = $pdo->prepare("
     SELECT COALESCE(SUM(s.paid_amount), 0) FROM sales s
     WHERE (s.sale_type = 'credit' OR s.payment_method = 'credit')
-      AND date(s.created_at) BETWEEN ? AND ?
+      AND " . reportLocalDateExpr('s') . " BETWEEN ? AND ?
 ");
 $collected->execute([$dates['from'], $dates['to']]);
 $collectedAmt = (float)$collected->fetchColumn();
@@ -52,7 +52,7 @@ renderSidebar();
 <div class="main-content">
 <?php renderTopbar('Credit Reports', 'Outstanding & collections'); ?>
 <div class="page-body">
-<?php renderReportNav('report_credit'); ?>
+<?php renderReportNav('report_credit', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options); ?>
 <?php renderReportMeta('Credit Reports', $dates); ?>
 

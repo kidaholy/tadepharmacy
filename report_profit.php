@@ -24,31 +24,32 @@ $expByCat->execute([$from, $to]);
 $expByCat = $expByCat->fetchAll();
 
 $profitByProduct = reportTopProducts($pdo, $dates, $filters, 'profit', 25);
+$itemCtx = reportItemFilterContext($filters, $from, $to);
 $profitByCat = $pdo->prepare("
     SELECT COALESCE(c.name,'Uncategorized') AS category,
            SUM(si.subtotal) AS revenue,
            SUM(si.quantity * b.purchase_price) AS cogs,
            SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS gross_profit
-    FROM sale_items si JOIN sales s ON s.id = si.sale_id
-    JOIN batches b ON b.id = si.batch_id
-    JOIN medicines m ON m.id = si.medicine_id
+    FROM sale_items si
+    {$itemCtx['joins']}
     LEFT JOIN categories c ON c.id = m.category_id
-    WHERE date(s.created_at) BETWEEN ? AND ?
+    WHERE {$itemCtx['where']}
     GROUP BY c.id ORDER BY gross_profit DESC
 ");
-$profitByCat->execute([$from, $to]);
+$profitByCat->execute($itemCtx['params']);
 $profitByCat = $profitByCat->fetchAll();
 
 $dailyProfit = $pdo->prepare("
-    SELECT date(s.created_at) AS day,
+    SELECT " . reportLocalDateExpr('s') . " AS day,
            SUM(si.subtotal) AS revenue,
            SUM(si.quantity * b.purchase_price) AS cogs,
            SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS gross
-    FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
-    WHERE date(s.created_at) BETWEEN ? AND ?
+    FROM sale_items si
+    {$itemCtx['joins']}
+    WHERE {$itemCtx['where']}
     GROUP BY day ORDER BY day ASC
 ");
-$dailyProfit->execute([$from, $to]);
+$dailyProfit->execute($itemCtx['params']);
 $dailyProfit = $dailyProfit->fetchAll();
 
 renderHead('Profit Reports', 'report-page');
@@ -59,7 +60,7 @@ renderSidebar();
 <div class="main-content">
 <?php renderTopbar('Profit Reports', 'Revenue, COGS & net profit'); ?>
 <div class="page-body">
-<?php renderReportNav('report_profit'); ?>
+<?php renderReportNav('report_profit', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options); ?>
 <?php renderReportMeta('Profit & Loss', $dates); ?>
 

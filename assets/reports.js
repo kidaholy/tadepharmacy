@@ -4,6 +4,10 @@ function toggleCustomDates() {
   document.querySelectorAll('.report-custom-dates').forEach(el => {
     el.style.display = show ? '' : 'none';
   });
+  ['reportDateFrom', 'reportDateTo'].forEach(id => {
+    const input = document.getElementById(id);
+    if (input) input.disabled = !show;
+  });
 }
 
 const CHART_COLORS = ['#2563eb', '#0284c7', '#0ea5e9', '#dc2626', '#d97706', '#1d4ed8', '#0369a1', '#38bdf8'];

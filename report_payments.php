@@ -16,7 +16,7 @@ renderSidebar();
 <div class="main-content">
 <?php renderTopbar('Payment Reports', 'Payment method analysis'); ?>
 <div class="page-body">
-<?php renderReportNav('report_payments'); ?>
+<?php renderReportNav('report_payments', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options); ?>
 <?php renderReportMeta('Payment Reports', $dates); ?>
 

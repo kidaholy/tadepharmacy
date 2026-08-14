@@ -47,25 +47,29 @@ $expired = $pdo->query("
 ")->fetchAll();
 
 $fastMoving = reportTopProducts($pdo, $dates, $filters, 'qty', 20);
+$itemCtx = reportItemFilterContext($filters, $from, $to);
 $slowMoving = $pdo->prepare("
     SELECT m.name, COALESCE(SUM(b.quantity),0) AS stock,
            COALESCE(SUM(b.quantity * b.purchase_price),0) AS value
     FROM medicines m JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
     WHERE m.id NOT IN (
-      SELECT DISTINCT si.medicine_id FROM sale_items si JOIN sales s ON s.id = si.sale_id
-      WHERE date(s.created_at) BETWEEN ? AND ?
+      SELECT DISTINCT si.medicine_id FROM sale_items si
+      {$itemCtx['joins']}
+      WHERE {$itemCtx['where']}
     ) GROUP BY m.id ORDER BY value DESC LIMIT 20
 ");
-$slowMoving->execute([$from, $to]);
+$slowMoving->execute($itemCtx['params']);
 $slowMoving = $slowMoving->fetchAll();
 
+$deadDay = reportLocalDateExpr('s');
 $deadStock = $pdo->prepare("
     SELECT m.name, COALESCE(SUM(b.quantity),0) AS stock,
            COALESCE(SUM(b.quantity * b.purchase_price),0) AS value
     FROM medicines m JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
     WHERE m.id NOT IN (
-      SELECT DISTINCT si.medicine_id FROM sale_items si JOIN sales s ON s.id = si.sale_id
-      WHERE date(s.created_at) BETWEEN date('now','-90 days') AND date('now')
+      SELECT DISTINCT si.medicine_id FROM sale_items si
+      JOIN sales s ON s.id = si.sale_id
+      WHERE $deadDay BETWEEN date('now','-90 days') AND date('now')
     ) GROUP BY m.id ORDER BY value DESC LIMIT 20
 ");
 $deadStock->execute();
@@ -91,7 +95,7 @@ renderSidebar();
 <div class="main-content">
 <?php renderTopbar('Inventory Reports', 'Stock analysis & risk'); ?>
 <div class="page-body">
-<?php renderReportNav('report_inventory'); ?>
+<?php renderReportNav('report_inventory', $dates, $filters); ?>
 <?php renderReportFilters($dates, $filters, $options); ?>
 <?php renderReportMeta('Inventory Reports', $dates); ?>
 

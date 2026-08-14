@@ -23,13 +23,19 @@ function reportPaymentMethods(): array {
     ]);
 }
 
+/** Business-local calendar date for UTC-stored timestamps (Africa/Addis_Ababa = UTC+3). */
+function reportLocalDateExpr(string $alias = 's', string $col = 'created_at'): string {
+    return "date($alias.$col, '+3 hours')";
+}
+
 function reportFilteredSalesSubquery(array $filters, string $from, string $to, string $select = 's.id, (s.total_amount - s.discount) AS net'): array {
     $ctx = reportBuildSalesContext($filters);
     $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+    $day = reportLocalDateExpr('s');
     $sql = "
         SELECT DISTINCT $select
         FROM sales s {$ctx['joins']}
-        WHERE date(s.created_at) BETWEEN ? AND ? $extra
+        WHERE $day BETWEEN ? AND ? $extra
     ";
     return ['sql' => $sql, 'params' => array_merge([$from, $to], $ctx['params'])];
 }
@@ -115,13 +121,15 @@ function reportNeedsItemJoin(array $filters): bool {
 }
 
 function reportBuildSalesContext(array $filters, string $saleAlias = 's'): array {
-    $joins  = [];
+    $joins  = ["LEFT JOIN customers cust ON cust.id = $saleAlias.customer_id"];
     $where  = [];
     $params = [];
 
     if ($filters['customer']) {
-        $where[]  = "$saleAlias.customer_name LIKE ?";
-        $params[] = '%' . $filters['customer'] . '%';
+        $where[]  = "(COALESCE(NULLIF(TRIM($saleAlias.customer_name), ''), cust.full_name) LIKE ? OR cust.phone LIKE ?)";
+        $like = '%' . $filters['customer'] . '%';
+        $params[] = $like;
+        $params[] = $like;
     }
     if ($filters['cashier']) {
         $where[]  = "$saleAlias.user_id = ?";
@@ -134,6 +142,8 @@ function reportBuildSalesContext(array $filters, string $saleAlias = 's'): array
     if ($filters['sales_type']) {
         if ($filters['sales_type'] === 'credit') {
             $where[] = "($saleAlias.sale_type = 'credit' OR $saleAlias.payment_method = 'credit')";
+        } elseif ($filters['sales_type'] === 'cash') {
+            $where[] = "($saleAlias.sale_type = 'cash' OR ($saleAlias.payment_method IS NOT NULL AND $saleAlias.payment_method != 'credit' AND COALESCE($saleAlias.sale_type, 'cash') != 'credit'))";
         } else {
             $where[]  = "$saleAlias.sale_type = ?";
             $params[] = $filters['sales_type'];
@@ -163,15 +173,73 @@ function reportBuildSalesContext(array $filters, string $saleAlias = 's'): array
     }
 
     return [
-        'joins'  => implode("\n", array_unique($joins)),
+        'joins'  => $joins ? ("\n" . implode("\n", array_unique($joins))) : '',
         'where'  => $where,
+        'params' => $params,
+    ];
+}
+
+/** Shared WHERE/JOIN pieces for sale_items-based reports (products, category, COGS). */
+function reportItemFilterContext(array $filters, string $from, string $to): array {
+    $day = reportLocalDateExpr('s');
+    $where = ["$day BETWEEN ? AND ?"];
+    $params = [$from, $to];
+    $joins = [
+        'JOIN sales s ON s.id = si.sale_id',
+        'JOIN batches b ON b.id = si.batch_id',
+        'JOIN medicines m ON m.id = si.medicine_id',
+    ];
+
+    if ($filters['product']) {
+        $where[] = 'si.medicine_id = ?';
+        $params[] = $filters['product'];
+    }
+    if ($filters['category']) {
+        $where[] = 'm.category_id = ?';
+        $params[] = $filters['category'];
+    }
+    if ($filters['supplier']) {
+        $where[] = 'b.supplier_id = ?';
+        $params[] = $filters['supplier'];
+    }
+    if ($filters['customer']) {
+        $joins[] = 'LEFT JOIN customers cust ON cust.id = s.customer_id';
+        $where[] = "(COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name) LIKE ? OR cust.phone LIKE ?)";
+        $like = '%' . $filters['customer'] . '%';
+        $params[] = $like;
+        $params[] = $like;
+    }
+    if ($filters['cashier']) {
+        $where[] = 's.user_id = ?';
+        $params[] = $filters['cashier'];
+    }
+    if ($filters['payment_method']) {
+        $where[] = 's.payment_method = ?';
+        $params[] = $filters['payment_method'];
+    }
+    if ($filters['sales_type'] === 'credit') {
+        $where[] = "(s.sale_type = 'credit' OR s.payment_method = 'credit')";
+    } elseif ($filters['sales_type'] === 'cash') {
+        $where[] = "(s.sale_type = 'cash' OR (s.payment_method IS NOT NULL AND s.payment_method != 'credit' AND COALESCE(s.sale_type, 'cash') != 'credit'))";
+    } elseif ($filters['sales_type']) {
+        $where[] = 's.sale_type = ?';
+        $params[] = $filters['sales_type'];
+    }
+    if ($filters['branch']) {
+        $where[] = 's.branch_id = ?';
+        $params[] = $filters['branch'];
+    }
+
+    return [
+        'joins'  => implode("\n", array_unique($joins)),
+        'where'  => implode(' AND ', $where),
         'params' => $params,
     ];
 }
 
 function reportDateClause(string $from, string $to, string $col = 'created_at', string $alias = 's'): array {
     return [
-        "date($alias.$col) BETWEEN ? AND ?",
+        reportLocalDateExpr($alias, $col) . ' BETWEEN ? AND ?',
         [$from, $to],
     ];
 }
@@ -252,37 +320,21 @@ function reportOverviewKpis(PDO $pdo, array $dates, array $filters): array {
     $ordersCur = (int)reportFetchScalar($pdo, "SELECT COUNT(*) FROM ({$curSub['sql']}) t", $curSub['params']);
     $ordersPrev = (int)reportFetchScalar($pdo, "SELECT COUNT(*) FROM ({$prevSub['sql']}) t", $prevSub['params']);
 
-    $itemWhere = ['date(s.created_at) BETWEEN ? AND ?'];
-    $itemParams = [$from, $to];
-    if ($filters['product'])   { $itemWhere[] = 'si.medicine_id = ?';   $itemParams[] = $filters['product']; }
-    if ($filters['category'])  { $itemWhere[] = 'mf.category_id = ?';   $itemParams[] = $filters['category']; }
-    if ($filters['supplier'])  { $itemWhere[] = 'bf.supplier_id = ?';    $itemParams[] = $filters['supplier']; }
-    if ($filters['customer'])  { $itemWhere[] = 's.customer_name LIKE ?'; $itemParams[] = '%' . $filters['customer'] . '%'; }
-    if ($filters['cashier'])   { $itemWhere[] = 's.user_id = ?';         $itemParams[] = $filters['cashier']; }
-    if ($filters['payment_method']) { $itemWhere[] = 's.payment_method = ?'; $itemParams[] = $filters['payment_method']; }
-    if ($filters['sales_type'] === 'credit') {
-        $itemWhere[] = "(s.sale_type = 'credit' OR s.payment_method = 'credit')";
-    } elseif ($filters['sales_type']) {
-        $itemWhere[] = 's.sale_type = ?';
-        $itemParams[] = $filters['sales_type'];
-    }
-    $itemJoin = 'JOIN sale_items si ON si.sale_id = s.id JOIN batches b ON b.id = si.batch_id';
-    if ($filters['category']) $itemJoin .= ' JOIN medicines mf ON mf.id = si.medicine_id';
-    $itemSqlWhere = implode(' AND ', $itemWhere);
-    $prevItemParams = array_merge([$pf, $pt], array_slice($itemParams, 2));
+    $itemCtx = reportItemFilterContext($filters, $from, $to);
+    $prevItemCtx = reportItemFilterContext($filters, $pf, $pt);
 
     $cogsCur = reportFetchScalar($pdo, "
         SELECT COALESCE(SUM(si.quantity * b.purchase_price), 0)
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
-        " . ($filters['category'] ? ' JOIN medicines mf ON mf.id = si.medicine_id' : '') . "
-        WHERE $itemSqlWhere
-    ", $itemParams);
+        FROM sale_items si
+        {$itemCtx['joins']}
+        WHERE {$itemCtx['where']}
+    ", $itemCtx['params']);
     $cogsPrev = reportFetchScalar($pdo, "
         SELECT COALESCE(SUM(si.quantity * b.purchase_price), 0)
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
-        " . ($filters['category'] ? ' JOIN medicines mf ON mf.id = si.medicine_id' : '') . "
-        WHERE " . str_replace('date(s.created_at) BETWEEN ? AND ?', 'date(s.created_at) BETWEEN ? AND ?', $itemSqlWhere) . "
-    ", $prevItemParams);
+        FROM sale_items si
+        {$prevItemCtx['joins']}
+        WHERE {$prevItemCtx['where']}
+    ", $prevItemCtx['params']);
 
     $grossCur  = $revenueCur - $cogsCur;
     $grossPrev = $revenuePrev - $cogsPrev;
@@ -353,7 +405,7 @@ function reportOverviewKpis(PDO $pdo, array $dates, array $filters): array {
     $creditCollected = reportFetchScalar($pdo, "
         SELECT COALESCE(SUM(s.paid_amount), 0) FROM sales s
         WHERE (s.sale_type = 'credit' OR s.payment_method = 'credit')
-          AND date(s.created_at) BETWEEN ? AND ?
+          AND " . reportLocalDateExpr('s') . " BETWEEN ? AND ?
     ", [$from, $to]);
 
     $creditCollectedToday = reportFetchScalar($pdo, "
@@ -394,7 +446,8 @@ function reportOverviewKpis(PDO $pdo, array $dates, array $filters): array {
 }
 
 function reportDailyRevenue(PDO $pdo, array $dates, array $filters): array {
-    $sub = reportFilteredSalesSubquery($filters, $dates['from'], $dates['to'], 's.id, date(s.created_at) AS day, (s.total_amount - s.discount) AS net');
+    $day = reportLocalDateExpr('s');
+    $sub = reportFilteredSalesSubquery($filters, $dates['from'], $dates['to'], "s.id, $day AS day, (s.total_amount - s.discount) AS net");
     $stmt = $pdo->prepare("
         SELECT day, SUM(net) AS revenue, COUNT(*) AS orders
         FROM ({$sub['sql']}) t GROUP BY day ORDER BY day ASC
@@ -414,31 +467,22 @@ function reportPaymentBreakdown(PDO $pdo, array $dates, array $filters): array {
 }
 
 function reportCategoryPerformance(PDO $pdo, array $dates, array $filters): array {
-    $where = ['date(s.created_at) BETWEEN ? AND ?'];
-    $params = [$dates['from'], $dates['to']];
-    if ($filters['payment_method']) { $where[] = 's.payment_method = ?'; $params[] = $filters['payment_method']; }
-    if ($filters['cashier']) { $where[] = 's.user_id = ?'; $params[] = $filters['cashier']; }
+    $ctx = reportItemFilterContext($filters, $dates['from'], $dates['to']);
     $stmt = $pdo->prepare("
         SELECT COALESCE(c.name, 'Uncategorized') AS category,
                SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue
         FROM sale_items si
-        JOIN sales s ON s.id = si.sale_id
-        JOIN medicines m ON m.id = si.medicine_id
+        {$ctx['joins']}
         LEFT JOIN categories c ON c.id = m.category_id
-        WHERE " . implode(' AND ', $where) . "
+        WHERE {$ctx['where']}
         GROUP BY c.id ORDER BY revenue DESC LIMIT 12
     ");
-    $stmt->execute($params);
+    $stmt->execute($ctx['params']);
     return $stmt->fetchAll();
 }
 
 function reportTopProducts(PDO $pdo, array $dates, array $filters, string $sort = 'qty', int $limit = 25, int $offset = 0): array {
-    $where = ['date(s.created_at) BETWEEN ? AND ?'];
-    $params = [$dates['from'], $dates['to']];
-    if ($filters['category']) { $where[] = 'm.category_id = ?'; $params[] = $filters['category']; }
-    if ($filters['product'])  { $where[] = 'm.id = ?';          $params[] = $filters['product']; }
-    if ($filters['payment_method']) { $where[] = 's.payment_method = ?'; $params[] = $filters['payment_method']; }
-
+    $ctx = reportItemFilterContext($filters, $dates['from'], $dates['to']);
     $orderMap = [
         'qty'    => 'qty_sold DESC',
         'rev'    => 'revenue DESC',
@@ -457,16 +501,14 @@ function reportTopProducts(PDO $pdo, array $dates, array $filters, string $sort 
                SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS net_profit,
                COALESCE(st.stock, 0) AS current_stock
         FROM sale_items si
-        JOIN sales s ON s.id = si.sale_id
-        JOIN medicines m ON m.id = si.medicine_id
-        JOIN batches b ON b.id = si.batch_id
+        {$ctx['joins']}
         LEFT JOIN categories c ON c.id = m.category_id
         LEFT JOIN (SELECT medicine_id, SUM(quantity) AS stock FROM batches GROUP BY medicine_id) st ON st.medicine_id = m.id
-        WHERE " . implode(' AND ', $where) . "
+        WHERE {$ctx['where']}
         GROUP BY m.id ORDER BY $order LIMIT $limit OFFSET $offset
     ";
     $stmt = $pdo->prepare($sql);
-    $stmt->execute($params);
+    $stmt->execute($ctx['params']);
     return $stmt->fetchAll();
 }
 
@@ -493,6 +535,7 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
 
     $from = $dates['from'];
     $to   = $dates['to'];
+    $day = reportLocalDateExpr('s');
 
     $perf = $pdo->prepare("
         SELECT SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue,
@@ -503,16 +546,16 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id
         JOIN batches b ON b.id = si.batch_id
-        WHERE si.medicine_id = ? AND date(s.created_at) BETWEEN ? AND ?
+        WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
     ");
     $perf->execute([$medId, $from, $to]);
     $perf = $perf->fetch();
 
     $trend = $pdo->prepare("
-        SELECT date(s.created_at) AS day, SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
+        SELECT $day AS day, SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
                SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
         FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
-        WHERE si.medicine_id = ? AND date(s.created_at) BETWEEN ? AND ?
+        WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
         GROUP BY day ORDER BY day ASC
     ");
     $trend->execute([$medId, $from, $to]);
@@ -528,7 +571,7 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
     $paySplit = $pdo->prepare("
         SELECT s.payment_method, SUM(si.subtotal) AS amount, SUM(si.quantity) AS qty
         FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        WHERE si.medicine_id = ? AND date(s.created_at) BETWEEN ? AND ?
+        WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
         GROUP BY s.payment_method
     ");
     $paySplit->execute([$medId, $from, $to]);
@@ -537,7 +580,7 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
     $topCust = $pdo->prepare("
         SELECT s.customer_name, SUM(si.quantity) AS qty, SUM(si.subtotal) AS spent
         FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        WHERE si.medicine_id = ? AND date(s.created_at) BETWEEN ? AND ?
+        WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
           AND s.customer_name IS NOT NULL AND TRIM(s.customer_name) != ''
         GROUP BY s.customer_name ORDER BY spent DESC LIMIT 5
     ");
@@ -595,14 +638,16 @@ function reportInsights(PDO $pdo, array $dates, array $filters): array {
     $insights = [];
     $from = $dates['from'];
     $to   = $dates['to'];
+    $itemCtx = reportItemFilterContext($filters, $from, $to);
 
     $best = $pdo->prepare("
         SELECT m.name, SUM(si.quantity) AS qty
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN medicines m ON m.id = si.medicine_id
-        WHERE date(s.created_at) BETWEEN ? AND ?
+        FROM sale_items si
+        {$itemCtx['joins']}
+        WHERE {$itemCtx['where']}
         GROUP BY m.id ORDER BY qty DESC LIMIT 1
     ");
-    $best->execute([$from, $to]);
+    $best->execute($itemCtx['params']);
     if ($row = $best->fetch()) {
         $insights[] = ['type' => 'success', 'icon' => 'trophy', 'text' => "Best seller: <strong>{$row['name']}</strong> with " . number_format($row['qty']) . " units sold."];
     }
@@ -611,11 +656,12 @@ function reportInsights(PDO $pdo, array $dates, array $filters): array {
         SELECT m.name FROM medicines m
         JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
         WHERE m.id NOT IN (
-            SELECT DISTINCT si.medicine_id FROM sale_items si JOIN sales s ON s.id = si.sale_id
-            WHERE date(s.created_at) BETWEEN ? AND ?
+            SELECT DISTINCT si.medicine_id FROM sale_items si
+            {$itemCtx['joins']}
+            WHERE {$itemCtx['where']}
         ) GROUP BY m.id LIMIT 1
     ");
-    $slow->execute([$from, $to]);
+    $slow->execute($itemCtx['params']);
     if ($row = $slow->fetch()) {
         $insights[] = ['type' => 'warning', 'icon' => 'snail', 'text' => "Slow mover alert: <strong>{$row['name']}</strong> has stock but no sales in this period."];
     }
@@ -642,25 +688,26 @@ function reportInsights(PDO $pdo, array $dates, array $filters): array {
     }
 
     $topProfit = $pdo->prepare("
-        SELECT m.name, SUM(si.subtotal - si.quantity * bt.purchase_price) AS profit
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        JOIN medicines m ON m.id = si.medicine_id JOIN batches bt ON bt.id = si.batch_id
-        WHERE date(s.created_at) BETWEEN ? AND ?
+        SELECT m.name, SUM(si.subtotal - si.quantity * b.purchase_price) AS profit
+        FROM sale_items si
+        {$itemCtx['joins']}
+        WHERE {$itemCtx['where']}
         GROUP BY m.id ORDER BY profit DESC LIMIT 1
     ");
-    $topProfit->execute([$from, $to]);
+    $topProfit->execute($itemCtx['params']);
     if ($row = $topProfit->fetch()) {
         $insights[] = ['type' => 'success', 'icon' => 'trending-up', 'text' => "Highest profit product: <strong>{$row['name']}</strong> (" . getSetting('currency','ETB') . ' ' . number_format($row['profit'], 0) . ")."];
     }
 
     $topCat = $pdo->prepare("
         SELECT COALESCE(c.name,'Uncategorized') AS cat, SUM(si.subtotal) AS rev
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id
-        JOIN medicines m ON m.id = si.medicine_id LEFT JOIN categories c ON c.id = m.category_id
-        WHERE date(s.created_at) BETWEEN ? AND ?
+        FROM sale_items si
+        {$itemCtx['joins']}
+        LEFT JOIN categories c ON c.id = m.category_id
+        WHERE {$itemCtx['where']}
         GROUP BY c.id ORDER BY rev DESC LIMIT 1
     ");
-    $topCat->execute([$from, $to]);
+    $topCat->execute($itemCtx['params']);
     if ($row = $topCat->fetch()) {
         $insights[] = ['type' => 'info', 'icon' => 'layers', 'text' => "Top category: <strong>{$row['cat']}</strong> leading revenue this period."];
     }
