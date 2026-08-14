@@ -361,7 +361,7 @@ renderSidebar();
             <input type="number" name="quantity" id="editQuantity" min="0" step="1" required>
           </div>
           <div class="form-group">
-            <label>Expiry Date <span id="editExpiryHint" style="color:var(--text-300);font-weight:400;"></span></label>
+            <label>Expiry Date <span id="editExpiryHint" style="color:var(--text-300);font-weight:400;">(optional for cosmetics)</span></label>
             <input type="date" name="expiry_date" id="editExpiryDate">
           </div>
         </div>
@@ -398,7 +398,7 @@ function syncEditExpiryRequired() {
   const input = document.getElementById('editExpiryDate');
   const hint = document.getElementById('editExpiryHint');
   input.required = requires;
-  if (hint) hint.textContent = requires ? '' : '(optional for cosmetics & equipment)';
+  if (hint) hint.textContent = requires ? '*' : '(optional for cosmetics & equipment)';
 }
 
 function openEditModal(batch) {

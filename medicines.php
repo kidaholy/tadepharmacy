@@ -333,6 +333,14 @@ renderSidebar();
   <?php endforeach; ?>
 </div>
 
+<?php if ($typeFilter === 'cosmetic'): ?>
+<p style="font-size:13px;color:var(--text-300);margin:-8px 0 16px;">Cosmetics can include an expiry date when you purchase or stock them, but it is optional. Medicines always require an expiry date.</p>
+<?php elseif ($typeFilter === 'equipment'): ?>
+<p style="font-size:13px;color:var(--text-300);margin:-8px 0 16px;">Equipment expiry date is optional when purchasing or adding stock.</p>
+<?php elseif ($typeFilter === 'medicine'): ?>
+<p style="font-size:13px;color:var(--text-300);margin:-8px 0 16px;">Medicines require an expiry date on every purchase batch / stock entry.</p>
+<?php endif; ?>
+
 <?php if ($action === 'add' || $action === 'edit'): ?>
 <!-- ── FORM ─────────────────────────────────────────────── -->
 <div class="card">

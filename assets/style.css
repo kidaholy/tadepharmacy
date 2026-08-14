@@ -126,6 +126,30 @@ body {
 
 .nav-item.active svg { stroke: var(--accent); }
 
+.nav-item.nav-item-child {
+  margin-left: 14px;
+  padding: 8px 12px 8px 14px;
+  font-size: 12.5px;
+  color: var(--text-300);
+  border-left: 2px solid var(--border);
+  border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+  margin-bottom: 4px;
+}
+
+.nav-item.nav-item-child svg { width: 15px; height: 15px; }
+
+.nav-item.nav-item-child:hover {
+  color: var(--text-100);
+  transform: translateX(2px);
+}
+
+.nav-item.nav-item-child.active {
+  border-left: 2px solid var(--accent);
+  padding-left: 14px;
+  background: var(--accent-glow);
+  color: var(--accent-dark);
+}
+
 .sidebar-footer {
   padding: 14px 18px;
   border-top: 1px solid var(--border);

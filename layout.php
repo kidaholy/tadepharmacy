@@ -9,9 +9,19 @@ if (str_starts_with($currentPage, 'report_')) {
 if ($currentPage === 'purchase_invoice') {
     $currentPage = 'purchases';
 }
+if (($_GET['action'] ?? '') === 'add') {
+    if ($currentPage === 'purchases') $currentPage = 'purchases_add';
+    if ($currentPage === 'customers') $currentPage = 'customers_add';
+    if ($currentPage === 'suppliers') $currentPage = 'suppliers_add';
+}
 
 $pagePermissions = pagePermissionMap();
-$requiredPerm = $pagePermissions[$currentPage] ?? null;
+$addPagePerms = [
+    'purchases_add' => 'purchases.manage',
+    'customers_add' => 'customers.manage',
+    'suppliers_add' => 'suppliers.manage',
+];
+$requiredPerm = $pagePermissions[$currentPage] ?? ($addPagePerms[$currentPage] ?? null);
 if ($requiredPerm !== null) {
     $allowed = is_array($requiredPerm) ? canAny($requiredPerm) : can($requiredPerm);
     if (!$allowed) {
@@ -30,12 +40,15 @@ $navDefs = [
     ['page' => 'index',         'icon' => 'grid-2x2',         'label' => 'Dashboard',          'perm' => 'dashboard.view'],
     ['page' => 'medicines',     'icon' => 'pill',              'label' => 'Medicines',          'perm' => 'medicines.view'],
     ['page' => 'sales',         'icon' => 'shopping-cart',     'label' => 'Sales',              'perm' => 'sales.view'],
+    ['page' => 'pos',           'icon' => 'plus',              'label' => 'New Sale',           'perm' => 'pos.access', 'child' => true],
     ['page' => 'customers',     'icon' => 'users',             'label' => 'Customers',          'perm' => 'customers.view'],
-    ['page' => 'pos',           'icon' => 'scan-barcode',      'label' => 'New Sale (POS)',     'perm' => 'pos.access'],
+    ['page' => 'customers_add', 'icon' => 'plus',              'label' => 'New Customer',       'perm' => 'customers.manage', 'href' => 'customers.php?action=add', 'child' => true],
     ['page' => 'purchases',     'icon' => 'package-open',      'label' => 'Purchases',          'perm' => 'purchases.view'],
-    ['page' => 'suppliers',     'icon' => 'truck',              'label' => 'Suppliers',          'perm' => ['suppliers.view', 'purchases.view']],
+    ['page' => 'purchases_add', 'icon' => 'plus',              'label' => 'New Purchase',       'perm' => 'purchases.manage', 'href' => 'purchases.php?action=add', 'child' => true],
+    ['page' => 'suppliers',     'icon' => 'truck',             'label' => 'Suppliers',          'perm' => ['suppliers.view', 'purchases.view']],
+    ['page' => 'suppliers_add', 'icon' => 'plus',              'label' => 'New Supplier',       'perm' => 'suppliers.manage', 'href' => 'suppliers.php?action=add', 'child' => true],
     ['page' => 'inventory',     'icon' => 'boxes',             'label' => 'Inventory',          'perm' => 'inventory.view'],
-    ['page' => 'reports',       'icon' => 'bar-chart-3',       'label' => 'Reports',              'perm' => 'reports.view'],
+    ['page' => 'reports',       'icon' => 'bar-chart-3',       'label' => 'Reports',            'perm' => 'reports.view'],
     ['page' => 'landing_cms',   'icon' => 'layout-template',   'label' => 'Landing Page',       'perm' => 'landing.edit'],
     ['page' => 'administrator', 'icon' => 'shield',            'label' => 'Administrator',      'perm' => ['users.manage', 'roles.manage']],
     ['page' => 'settings',      'icon' => 'settings',          'label' => 'Settings',           'perm' => 'settings.view'],
@@ -76,7 +89,9 @@ function renderSidebar(): void {
     echo '<nav class="sidebar-nav">';
     foreach ($navItems as $item) {
         $active = ($currentPage === $item['page']) ? ' active' : '';
-        echo "<a href=\"{$item['page']}.php\" class=\"nav-item{$active}\">";
+        $child = !empty($item['child']) ? ' nav-item-child' : '';
+        $href = $item['href'] ?? ($item['page'] . '.php');
+        echo "<a href=\"" . htmlspecialchars($href) . "\" class=\"nav-item{$child}{$active}\">";
         echo "<i data-lucide=\"{$item['icon']}\"></i>";
         echo "<span>{$item['label']}</span>";
         echo "</a>";

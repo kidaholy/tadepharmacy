@@ -219,7 +219,7 @@ renderSidebar();
           <input type="date" name="manufacturing_date[]">
         </div>
         <div class="form-group">
-          <label>Expiry</label>
+          <label>Expiry <span class="expiry-hint" style="color:var(--text-300);font-weight:400;"></span></label>
           <input type="date" name="expiry_date[]" class="expiry-input">
         </div>
         <div class="form-group">
@@ -368,15 +368,29 @@ document.getElementById('supplierSelect').addEventListener('change', function() 
 document.getElementById('purchaseDate').addEventListener('change', syncDueDate);
 
 const productCatalog = <?= json_encode(array_map(static function ($m) {
+    $type = $m['product_type'] ?? 'medicine';
     return [
         'id' => (int)$m['id'],
         'name' => $m['name'],
         'generic' => $m['generic_name'] ?? '',
         'unit' => $m['unit'] ?? '',
         'sku' => $m['sku'] ?? '',
-        'requiresExpiry' => productRequiresExpiry($m['product_type'] ?? 'medicine') ? 1 : 0,
+        'type' => $type,
+        'requiresExpiry' => productRequiresExpiry($type) ? 1 : 0,
     ];
 }, $medicines), JSON_UNESCAPED_UNICODE) ?>;
+
+function syncExpiryField(row, requires) {
+  const exp = row.querySelector('.expiry-input');
+  const hint = row.querySelector('.expiry-hint');
+  if (exp) exp.required = !!requires;
+  if (hint) {
+    hint.textContent = requires ? '*' : '(optional)';
+    hint.title = requires
+      ? 'Expiry date is required for medicines'
+      : 'Optional for cosmetics and equipment — leave blank if none';
+  }
+}
 
 function pickerFrom(el) {
   return el.closest('.product-picker');
@@ -408,7 +422,7 @@ function filterProductPicker(input) {
   list.innerHTML = matches.map((p, i) =>
     `<button type="button" class="product-picker-item${i === 0 ? ' active' : ''}" data-id="${p.id}">`
     + `${escapeHtml(p.name)}`
-    + `<small>${escapeHtml([p.generic, p.unit, p.sku].filter(Boolean).join(' · '))}</small>`
+    + `<small>${escapeHtml([p.generic, p.unit, p.sku, p.type].filter(Boolean).join(' · '))}</small>`
     + `</button>`
   ).join('');
   list.hidden = false;
@@ -425,8 +439,7 @@ function selectProduct(picker, id) {
   picker.querySelector('.product-search').value = p.name;
   picker.querySelector('.product-picker-list').hidden = true;
   const row = picker.closest('.item-row');
-  const exp = row.querySelector('.expiry-input');
-  if (exp) exp.required = !!p.requiresExpiry;
+  syncExpiryField(row, !!p.requiresExpiry);
 }
 function productPickerKey(e) {
   const picker = pickerFrom(e.target);
@@ -507,6 +520,7 @@ function addRow() {
   if (list) { list.hidden = true; list.innerHTML = ''; }
   const exp = row.querySelector('.expiry-input');
   if (exp) exp.required = false;
+  syncExpiryField(row, false);
   tbody.appendChild(row);
 }
 function removeRow(btn) {
@@ -515,6 +529,7 @@ function removeRow(btn) {
 }
 syncDueDate();
 recalc();
+document.querySelectorAll('.item-row').forEach(row => syncExpiryField(row, false));
 </script>
 
 <?php elseif ($action === 'view' && $purchase):
