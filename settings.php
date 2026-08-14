@@ -24,6 +24,11 @@ $notifyFields = [
 ];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    if (!can('settings.manage')) {
+        flashSet('error', 'You do not have permission to edit settings.');
+        header('Location: settings.php');
+        exit;
+    }
     $stmt = $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
     foreach (array_merge($fields, $notifyFields) as $key => $def) {
         if ($def['type'] === 'checkbox') {
@@ -147,6 +152,7 @@ renderSidebar();
 
     <div class="card" style="border-color:rgba(79,142,247,0.35);margin-bottom:20px;">
       <div class="card-header"><span class="card-title" style="color:var(--accent-dark);">Demo Data</span></div>
+      <?php if (can('demo.manage')): ?>
       <p style="font-size:13px;color:var(--text-300);margin-bottom:16px;">
         Load sample customers, suppliers, purchases, sales (all payment methods), credit scenarios, and expenses
         so you can test Reports, Dashboard, POS, and Customers.
@@ -166,8 +172,12 @@ renderSidebar();
           <button type="submit" class="btn btn-danger btn-sm"><i data-lucide="trash-2"></i> Remove Demo Data</button>
         </form>
       </div>
+      <?php else: ?>
+      <p style="font-size:13px;color:var(--text-300);">You do not have permission to manage demo data.</p>
+      <?php endif; ?>
     </div>
 
+    <?php if (can('sales.clear_all')): ?>
     <div class="card" style="border-color:rgba(242,95,92,0.3);">
       <div class="card-header"><span class="card-title" style="color:var(--danger);">Danger Zone</span></div>
       <p style="font-size:13px;color:var(--text-300);margin-bottom:16px;">These actions are irreversible. Proceed with caution.</p>
@@ -180,6 +190,7 @@ renderSidebar();
         </form>
       </div>
     </div>
+    <?php endif; ?>
   </div>
 </div>
 

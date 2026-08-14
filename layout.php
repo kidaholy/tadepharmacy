@@ -6,23 +6,56 @@ $currentPage = basename($_SERVER['PHP_SELF'], '.php');
 if (str_starts_with($currentPage, 'report_')) {
     $currentPage = 'reports';
 }
+
+$pagePermissions = [
+    'index'         => 'dashboard.view',
+    'medicines'     => 'medicines.view',
+    'sales'         => 'sales.view',
+    'customers'     => 'customers.view',
+    'pos'           => 'pos.access',
+    'purchases'     => 'purchases.view',
+    'inventory'     => 'inventory.view',
+    'reports'       => 'reports.view',
+    'settings'      => 'settings.view',
+    'landing_cms'   => 'landing.edit',
+    'administrator' => null,
+];
+
+if ($currentPage === 'administrator') {
+    if (!canAny(['users.manage', 'roles.manage'])) {
+        header('Location: index.php');
+        exit;
+    }
+} elseif (isset($pagePermissions[$currentPage]) && $pagePermissions[$currentPage] && !can($pagePermissions[$currentPage])) {
+    header('Location: index.php');
+    exit;
+}
+
 $pharmacyName = getSetting('pharmacy_name', 'TADE PHARMACY');
 $user = currentUser();
 
-$navItems = [
-    ['page' => 'index',     'icon' => 'grid-2x2',         'label' => 'Dashboard'],
-    ['page' => 'medicines', 'icon' => 'pill',              'label' => 'Medicines'],
-    ['page' => 'sales',     'icon' => 'shopping-cart',     'label' => 'Sales'],
-    ['page' => 'customers', 'icon' => 'users',             'label' => 'Customers'],
-    ['page' => 'pos',       'icon' => 'scan-barcode',      'label' => 'New Sale (POS)'],
-    ['page' => 'purchases', 'icon' => 'package-open',      'label' => 'Purchases'],
-    ['page' => 'inventory', 'icon' => 'boxes',             'label' => 'Inventory'],
-    ['page' => 'reports',   'icon' => 'bar-chart-3',       'label' => 'Reports'],
+$navItems = [];
+$navDefs = [
+    ['page' => 'index',         'icon' => 'grid-2x2',         'label' => 'Dashboard',          'perm' => 'dashboard.view'],
+    ['page' => 'medicines',     'icon' => 'pill',              'label' => 'Medicines',          'perm' => 'medicines.view'],
+    ['page' => 'sales',         'icon' => 'shopping-cart',     'label' => 'Sales',              'perm' => 'sales.view'],
+    ['page' => 'customers',     'icon' => 'users',             'label' => 'Customers',          'perm' => 'customers.view'],
+    ['page' => 'pos',           'icon' => 'scan-barcode',      'label' => 'New Sale (POS)',     'perm' => 'pos.access'],
+    ['page' => 'purchases',     'icon' => 'package-open',      'label' => 'Purchases',          'perm' => 'purchases.view'],
+    ['page' => 'inventory',     'icon' => 'boxes',             'label' => 'Inventory',          'perm' => 'inventory.view'],
+    ['page' => 'reports',       'icon' => 'bar-chart-3',       'label' => 'Reports',              'perm' => 'reports.view'],
+    ['page' => 'landing_cms',   'icon' => 'layout-template',   'label' => 'Landing Page',       'perm' => 'landing.edit'],
+    ['page' => 'administrator', 'icon' => 'shield',            'label' => 'Administrator',      'perm' => ['users.manage', 'roles.manage']],
+    ['page' => 'settings',      'icon' => 'settings',          'label' => 'Settings',           'perm' => 'settings.view'],
 ];
-if (($user['role'] ?? '') === 'admin') {
-    $navItems[] = ['page' => 'landing_cms', 'icon' => 'layout-template', 'label' => 'Landing Page'];
+foreach ($navDefs as $item) {
+    $perm = $item['perm'];
+    $allowed = is_array($perm) ? canAny($perm) : can($perm);
+    if ($allowed) {
+        unset($item['perm']);
+        $navItems[] = $item;
+    }
 }
-$navItems[] = ['page' => 'settings', 'icon' => 'settings', 'label' => 'Settings'];
 
 function renderHead(string $title = '', string $bodyClass = ''): void {
     global $pharmacyName;
@@ -63,7 +96,7 @@ function renderSidebar(): void {
         echo '<div class="sidebar-user-avatar"><i data-lucide="user"></i></div>';
         echo '<div class="sidebar-user-info">';
         echo '<span class="sidebar-user-name">' . htmlspecialchars($user['full_name']) . '</span>';
-        echo '<span class="sidebar-user-role">' . htmlspecialchars(ucfirst($user['role'])) . '</span>';
+        echo '<span class="sidebar-user-role">' . htmlspecialchars($user['role_name'] ?? ucfirst($user['role'])) . '</span>';
         echo '</div>';
         echo '</div>';
         echo '<a href="logout.php" class="sidebar-logout"><i data-lucide="log-out"></i> Logout</a>';

@@ -733,6 +733,89 @@ textarea { resize: vertical; min-height: 90px; }
 .overlay-bg { position: fixed; inset: 0; z-index: 99; display: none; background: rgba(15, 23, 42, 0.35); }
 .overlay-bg.open { display: block; }
 
+/* ─── ADMINISTRATOR / RBAC ───────────────────────────────── */
+.admin-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+.admin-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 16px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--bg-600);
+  color: var(--text-200);
+  font-size: 13px;
+  font-weight: 500;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+.admin-tab:hover {
+  background: var(--bg-500);
+  color: var(--text-100);
+}
+.admin-tab.active {
+  background: var(--accent-glow);
+  border-color: rgba(79, 142, 247, 0.45);
+  color: var(--accent);
+}
+.admin-grid .card { margin-bottom: 0; }
+.perm-matrix-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  max-height: 520px;
+  overflow-y: auto;
+}
+.perm-matrix {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.perm-matrix th,
+.perm-matrix td {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+.perm-matrix th {
+  background: var(--bg-500);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-300);
+}
+.perm-col { width: 72px; text-align: center; }
+.perm-module-row td {
+  background: var(--bg-500);
+  font-weight: 600;
+  font-size: 12px;
+  color: var(--accent2);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.perm-label { display: block; color: var(--text-100); }
+.perm-key {
+  display: block;
+  font-size: 11px;
+  color: var(--text-300);
+  margin-top: 2px;
+  font-family: ui-monospace, monospace;
+}
+.perm-radio {
+  display: flex;
+  justify-content: center;
+  cursor: pointer;
+}
+.perm-radio input { width: auto; margin: 0; cursor: pointer; }
+
 /* ─── AUTH / WELCOME / LOGIN ─────────────────────────────── */
 .auth-body {
   display: block;

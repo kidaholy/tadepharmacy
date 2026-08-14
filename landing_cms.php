@@ -2,7 +2,7 @@
 require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/landing_lib.php';
 
-requireAdmin();
+requirePermission('landing.edit');
 
 $pdo = getDB();
 $msg = '';

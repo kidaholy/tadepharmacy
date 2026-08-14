@@ -285,6 +285,9 @@ function initDB(PDO $pdo): void {
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_payment_history_sale ON payment_history(sale_id)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_payment_history_customer ON payment_history(customer_id)");
+
+    require_once __DIR__ . '/permissions_lib.php';
+    initPermissionsSchema($pdo);
 }
 
 function getSetting(string $key, string $default = ''): string {
