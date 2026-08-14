@@ -53,7 +53,7 @@ $pharmacyName = getSetting('pharmacy_name', 'TADE PHARMACY');
         <?php renderPharmacyLogo('logo-icon--md'); ?>
         <div class="logo-text">
           <span class="logo-main"><?= htmlspecialchars($pharmacyName) ?></span>
-          <span class="logo-sub">Sign in to continue</span>
+          <span class="logo-sub">Manager · Pharmacist · Cashier · Admin</span>
         </div>
       </div>
 

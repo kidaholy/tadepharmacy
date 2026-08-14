@@ -53,15 +53,15 @@ function landingDefaults(): array {
         'landing_headline'       => 'Quality medicines, expert care',
         'landing_lead'           => 'TADE Pharmacy delivers safe, affordable medicines and professional guidance for families, clinics, and chronic-care patients across Ethiopia.',
         'landing_hero_image'     => LANDING_HERO_DEFAULT,
-        'landing_cta_primary'    => 'Staff Portal',
+        'landing_cta_primary'    => 'Team Login',
         'landing_cta_secondary'  => 'View services',
 
         'landing_about_title'    => 'About TADE Pharmacy',
-        'landing_about'          => "We are a full-service pharmacy committed to making healthcare accessible. From everyday wellness products to specialized prescriptions, our team ensures every item is authentic, properly stored, and dispensed with clear instructions.\n\nWe partner with trusted suppliers, monitor batch expiry (FEFO), and maintain inventory you can rely on — whether you visit in person or coordinate through our staff portal.",
+        'landing_about'          => "We are a full-service pharmacy committed to making healthcare accessible. From everyday wellness products to specialized prescriptions, our team ensures every item is authentic, properly stored, and dispensed with clear instructions.\n\nWe partner with trusted suppliers, monitor batch expiry (FEFO), and maintain inventory you can rely on — whether you visit in person or work with our managers, pharmacists, and cashiers through the team portal.",
         'landing_mission'        => 'Our mission is to combine modern pharmacy management with compassionate service, so every customer leaves informed, supported, and confident in their treatment.',
 
         'landing_hours'          => "Monday – Friday: 8:00 AM – 8:00 PM\nSaturday: 8:00 AM – 6:00 PM\nSunday: 9:00 AM – 2:00 PM\nPublic holidays: limited hours — call ahead",
-        'landing_services_intro' => 'Everything you need from a modern pharmacy — dispensing, inventory-backed stock, credit accounts for registered customers, and digital reporting for our team.',
+        'landing_services_intro' => 'Everything you need from a modern pharmacy — dispensing, inventory-backed stock, credit accounts for registered customers, and digital reporting for managers, pharmacists, and cashiers.',
 
         'landing_stat_1_value'   => '15+',
         'landing_stat_1_label'   => 'Years serving the community',

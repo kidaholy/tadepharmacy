@@ -158,7 +158,7 @@ renderSidebar();
         <input type="hidden" name="act" value="create_role">
         <div class="form-group">
           <label>Role Name</label>
-          <input type="text" name="name" placeholder="e.g. Pharmacist, Cashier" required>
+          <input type="text" name="name" placeholder="e.g. Senior Pharmacist, Night Cashier" required>
         </div>
         <div class="form-group">
           <label>Description</label>

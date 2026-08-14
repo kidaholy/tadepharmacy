@@ -39,7 +39,7 @@ $heroUrl      = landingHeroImageUrl($landing);
           <span class="logo-sub">Pharmacy &amp; Health Care</span>
         </div>
       </div>
-      <a href="login.php" class="btn btn-primary btn-sm"><i data-lucide="log-in"></i> Staff login</a>
+      <a href="login.php" class="btn btn-primary btn-sm"><i data-lucide="log-in"></i> Team login</a>
     </header>
 
     <section class="welcome-hero welcome-hero--photo">
@@ -157,9 +157,9 @@ $heroUrl      = landingHeroImageUrl($landing);
     <section class="welcome-cta">
       <div>
         <h2>Ready to manage pharmacy operations?</h2>
-        <p>Staff can sign in to access POS, inventory, reports, customer credit, and more.</p>
+        <p>Managers, pharmacists, cashiers, and administrators can sign in to access POS, inventory, reports, customer credit, and more.</p>
       </div>
-      <a href="login.php" class="btn btn-primary btn-lg"><i data-lucide="shield-check"></i> Go to staff portal</a>
+      <a href="login.php" class="btn btn-primary btn-lg"><i data-lucide="shield-check"></i> Go to team portal</a>
     </section>
 
     <footer class="welcome-footer">

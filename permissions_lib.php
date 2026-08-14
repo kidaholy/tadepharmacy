@@ -105,31 +105,75 @@ function seedPermissionsAndRoles(PDO $pdo): void {
 
     $roleStmt = $pdo->prepare('INSERT OR IGNORE INTO roles (slug, name, description, is_system) VALUES (?, ?, ?, ?)');
 
-    $roleStmt->execute(['admin', 'Administrator', 'Full system access', 1]);
-    $roleStmt->execute(['staff', 'Staff', 'Standard pharmacy staff access', 1]);
+    $roleStmt->execute(['admin',       'Administrator', 'Full system access', 1]);
+    $roleStmt->execute(['manager',     'Manager',       'Oversees pharmacy operations, inventory, and reports', 1]);
+    $roleStmt->execute(['pharmacist',  'Pharmacist',    'Dispenses medicines and manages stock', 1]);
+    $roleStmt->execute(['cashier',     'Cashier',       'Handles POS sales and customer payments', 1]);
+    $roleStmt->execute(['staff',       'Staff',         'General team member access', 1]);
 
-    $adminRoleId = (int) $pdo->query("SELECT id FROM roles WHERE slug = 'admin' LIMIT 1")->fetchColumn();
-    $staffRoleId = (int) $pdo->query("SELECT id FROM roles WHERE slug = 'staff' LIMIT 1")->fetchColumn();
+    $adminRoleId      = (int) $pdo->query("SELECT id FROM roles WHERE slug = 'admin' LIMIT 1")->fetchColumn();
+    $managerRoleId    = (int) $pdo->query("SELECT id FROM roles WHERE slug = 'manager' LIMIT 1")->fetchColumn();
+    $pharmacistRoleId = (int) $pdo->query("SELECT id FROM roles WHERE slug = 'pharmacist' LIMIT 1")->fetchColumn();
+    $cashierRoleId    = (int) $pdo->query("SELECT id FROM roles WHERE slug = 'cashier' LIMIT 1")->fetchColumn();
+    $staffRoleId      = (int) $pdo->query("SELECT id FROM roles WHERE slug = 'staff' LIMIT 1")->fetchColumn();
 
     if ($adminRoleId) {
-        setRolePermissions($pdo, $adminRoleId, array_fill_keys(allPermissionKeys(), 'allow'));
+        seedRolePermissionsIfEmpty($pdo, $adminRoleId, array_fill_keys(allPermissionKeys(), 'allow'));
     }
 
-    if ($staffRoleId) {
-        $staffAllows = [
+    if ($managerRoleId) {
+        seedRolePermissionsIfEmpty($pdo, $managerRoleId, allowPermissions([
             'dashboard.view', 'medicines.view', 'medicines.manage',
             'sales.view', 'sales.manage', 'customers.view', 'customers.manage',
             'pos.access', 'purchases.view', 'purchases.manage',
             'inventory.view', 'inventory.manage', 'reports.view',
-        ];
-        $staffPerms = [];
-        foreach ($staffAllows as $key) {
-            $staffPerms[$key] = 'allow';
-        }
-        setRolePermissions($pdo, $staffRoleId, $staffPerms);
+            'settings.view', 'settings.manage',
+        ]));
+    }
+
+    if ($pharmacistRoleId) {
+        seedRolePermissionsIfEmpty($pdo, $pharmacistRoleId, allowPermissions([
+            'dashboard.view', 'medicines.view', 'medicines.manage',
+            'sales.view', 'customers.view', 'pos.access',
+            'purchases.view', 'inventory.view', 'inventory.manage',
+            'reports.view',
+        ]));
+    }
+
+    if ($cashierRoleId) {
+        seedRolePermissionsIfEmpty($pdo, $cashierRoleId, allowPermissions([
+            'dashboard.view', 'pos.access',
+            'sales.view', 'sales.manage',
+            'customers.view', 'customers.manage',
+        ]));
+    }
+
+    if ($staffRoleId) {
+        seedRolePermissionsIfEmpty($pdo, $staffRoleId, allowPermissions([
+            'dashboard.view', 'medicines.view', 'medicines.manage',
+            'sales.view', 'sales.manage', 'customers.view', 'customers.manage',
+            'pos.access', 'purchases.view', 'purchases.manage',
+            'inventory.view', 'inventory.manage', 'reports.view',
+        ]));
     }
 
     migrateLegacyUserRoles($pdo, $adminRoleId, $staffRoleId);
+}
+
+function allowPermissions(array $keys): array {
+    $perms = [];
+    foreach ($keys as $key) {
+        $perms[$key] = 'allow';
+    }
+    return $perms;
+}
+
+function seedRolePermissionsIfEmpty(PDO $pdo, int $roleId, array $permissions): void {
+    $stmt = $pdo->prepare('SELECT COUNT(*) FROM role_permissions WHERE role_id = ?');
+    $stmt->execute([$roleId]);
+    if ((int) $stmt->fetchColumn() === 0) {
+        setRolePermissions($pdo, $roleId, $permissions);
+    }
 }
 
 function migrateLegacyUserRoles(PDO $pdo, int $adminRoleId, int $staffRoleId): void {
