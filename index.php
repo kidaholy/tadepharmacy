@@ -1,4 +1,11 @@
 <?php
+require_once __DIR__ . '/auth.php';
+
+if (!isLoggedIn()) {
+    header('Location: welcome.php');
+    exit;
+}
+
 require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/sales_lib.php';
 require_once __DIR__ . '/notifications_lib.php';

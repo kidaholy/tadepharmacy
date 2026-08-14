@@ -66,7 +66,16 @@ function canAny(array $permissions): bool {
 
 function requireAuth(): void {
     if (!isLoggedIn()) {
-        $redirect = urlencode($_SERVER['REQUEST_URI'] ?? 'index.php');
+        $requestUri = $_SERVER['REQUEST_URI'] ?? 'index.php';
+        $path = parse_url($requestUri, PHP_URL_PATH) ?: 'index.php';
+        $page = basename($path, '.php') ?: 'index';
+
+        if ($page === 'index') {
+            header('Location: welcome.php');
+            exit;
+        }
+
+        $redirect = urlencode($requestUri);
         header('Location: login.php?redirect=' . $redirect);
         exit;
     }
