@@ -33,6 +33,7 @@ $nearExpiry = $pdo->query("
            (b.quantity * b.purchase_price) AS value
     FROM batches b JOIN medicines m ON m.id = b.medicine_id
     WHERE b.expiry_date BETWEEN date('now') AND date('now','+30 days') AND b.quantity > 0
+      AND b.expiry_date < '9000-01-01'
     ORDER BY b.expiry_date ASC LIMIT 50
 ")->fetchAll();
 
@@ -41,6 +42,7 @@ $expired = $pdo->query("
            (b.quantity * b.purchase_price) AS value
     FROM batches b JOIN medicines m ON m.id = b.medicine_id
     WHERE b.expiry_date < date('now') AND b.quantity > 0
+      AND b.expiry_date < '9000-01-01'
     ORDER BY b.expiry_date DESC LIMIT 50
 ")->fetchAll();
 

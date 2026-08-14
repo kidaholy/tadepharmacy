@@ -210,6 +210,7 @@ function initDB(PDO $pdo): void {
         'ALTER TABLE sales ADD COLUMN remaining_balance REAL DEFAULT 0',
         'ALTER TABLE sales ADD COLUMN payment_reference TEXT',
         'ALTER TABLE sales ADD COLUMN credit_notes TEXT',
+        'ALTER TABLE medicines ADD COLUMN product_type TEXT DEFAULT \'medicine\'',
     ] as $migration) {
         try { $pdo->exec($migration); } catch (PDOException $e) { /* already applied */ }
     }
@@ -267,6 +268,8 @@ function initDB(PDO $pdo): void {
         'Respiratory & Allergy',
         'Gastrointestinal Health',
         'Dermatology & Skin Care',
+        'Cosmetics',
+        'Equipment',
         'Other',
     ];
     $catStmt = $pdo->prepare("INSERT OR IGNORE INTO categories (name) VALUES (?)");

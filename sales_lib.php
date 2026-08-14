@@ -11,6 +11,66 @@ function posPaymentMethods(): array {
     ];
 }
 
+function productTypes(): array {
+    return [
+        'medicine'  => 'Medicine',
+        'cosmetic'  => 'Cosmetic',
+        'equipment' => 'Equipment',
+    ];
+}
+
+function productTypeFromCategory(?string $categoryName, string $fallback = 'medicine'): string {
+    $name = strtolower(trim((string) $categoryName));
+    if (str_contains($name, 'cosmetic')) {
+        return 'cosmetic';
+    }
+    if (str_contains($name, 'equipment') || str_contains($name, 'device')) {
+        return 'equipment';
+    }
+    return in_array($fallback, array_keys(productTypes()), true) ? $fallback : 'medicine';
+}
+
+function productUnits(): array {
+    return [
+        'strip', 'pk', 'bottle', 'sachet', 'ampoule', 'tube', 'jar', 'box', 'pack',
+        'suppository', 'effervescent', 'puff', 'pis', 'tin', 'vial',
+        'pcs', 'piece', 'pair', 'set', 'kit', 'tablet', 'capsule', 'ml', 'L',
+    ];
+}
+
+function noExpiryDate(): string {
+    return '9999-12-31';
+}
+
+function productRequiresExpiry(?string $productType): bool {
+    return ($productType ?: 'medicine') === 'medicine';
+}
+
+function isNoExpiryDate(?string $date): bool {
+    $date = trim((string) $date);
+    return $date === '' || $date === '9999-12-31' || $date === '0000-00-00';
+}
+
+function normalizeExpiryDate(?string $date, bool $required): ?string {
+    $date = trim((string) $date);
+    if ($date === '') {
+        return $required ? null : noExpiryDate();
+    }
+    return $date;
+}
+
+function formatExpiryDate(?string $date): string {
+    if (isNoExpiryDate($date)) {
+        return 'No expiry';
+    }
+    $ts = strtotime((string) $date);
+    return $ts ? date('M d, Y', $ts) : '—';
+}
+
+function expiryTrackedSql(string $column = 'expiry_date'): string {
+    return $column . " < '9000-01-01'";
+}
+
 function saleNetAmount(array $sale): float {
     return (float)$sale['total_amount'] - (float)$sale['discount'];
 }
@@ -205,8 +265,12 @@ function dashboardSnapshot(PDO $pdo): array {
     $expiringSoon = (int) scalarBind($pdo, "
         SELECT COUNT(*) FROM batches
         WHERE expiry_date BETWEEN ? AND date(?, '+30 days') AND quantity > 0
+          AND " . expiryTrackedSql() . "
     ", [$today, $today]);
-    $expired = (int) scalarBind($pdo, "SELECT COUNT(*) FROM batches WHERE expiry_date < ? AND quantity > 0", [$today]);
+    $expired = (int) scalarBind($pdo, "
+        SELECT COUNT(*) FROM batches
+        WHERE expiry_date < ? AND quantity > 0 AND " . expiryTrackedSql() . "
+    ", [$today]);
 
     $outstandingCredit = (float) $pdo->query("
         SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
@@ -247,6 +311,7 @@ function dashboardSnapshot(PDO $pdo): array {
         FROM batches b
         JOIN medicines m ON m.id = b.medicine_id
         WHERE b.expiry_date <= date(?, '+30 days') AND b.quantity > 0
+          AND " . expiryTrackedSql('b.expiry_date') . "
         ORDER BY b.expiry_date ASC
         LIMIT 6
     ");

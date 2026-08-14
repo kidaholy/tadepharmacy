@@ -332,6 +332,7 @@ function reportOverviewKpis(PDO $pdo, array $dates, array $filters): array {
     $expiring = (int)$pdo->query("
         SELECT COUNT(DISTINCT medicine_id) FROM batches
         WHERE expiry_date BETWEEN date('now') AND date('now', '+30 days') AND quantity > 0
+          AND expiry_date < '9000-01-01'
     ")->fetchColumn();
 
     $returned = (int)reportFetchScalar($pdo, "
@@ -550,10 +551,10 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
     ");
     $supplier->execute([$medId]);
 
-    $expStmt = $pdo->prepare("SELECT COALESCE(SUM(quantity),0) FROM batches WHERE medicine_id=? AND expiry_date < date('now') AND quantity>0");
+    $expStmt = $pdo->prepare("SELECT COALESCE(SUM(quantity),0) FROM batches WHERE medicine_id=? AND expiry_date < date('now') AND quantity>0 AND expiry_date < '9000-01-01'");
     $expStmt->execute([$medId]);
     $expired = (int)$expStmt->fetchColumn();
-    $nearStmt = $pdo->prepare("SELECT COALESCE(SUM(quantity),0) FROM batches WHERE medicine_id=? AND expiry_date BETWEEN date('now') AND date('now','+30 days') AND quantity>0");
+    $nearStmt = $pdo->prepare("SELECT COALESCE(SUM(quantity),0) FROM batches WHERE medicine_id=? AND expiry_date BETWEEN date('now') AND date('now','+30 days') AND quantity>0 AND expiry_date < '9000-01-01'");
     $nearStmt->execute([$medId]);
     $nearExpiry = (int)$nearStmt->fetchColumn();
 
@@ -633,6 +634,7 @@ function reportInsights(PDO $pdo, array $dates, array $filters): array {
         SELECT m.name, b.expiry_date, b.quantity
         FROM batches b JOIN medicines m ON m.id = b.medicine_id
         WHERE b.expiry_date BETWEEN date('now') AND date('now','+14 days') AND b.quantity > 0
+          AND b.expiry_date < '9000-01-01'
         ORDER BY b.expiry_date ASC LIMIT 1
     ")->fetch();
     if ($exp) {

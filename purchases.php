@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/sales_lib.php';
 
 $pdo    = getDB();
 $action = $_GET['action'] ?? 'list';
@@ -25,20 +26,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $expiries    = $_POST['expiry_date']     ?? [];
 
         $validItems = [];
+        $missingExpiry = false;
+        $ids = array_values(array_unique(array_filter(array_map('intval', $meds))));
+        $typeMap = [];
+        if ($ids) {
+            $placeholders = implode(',', array_fill(0, count($ids), '?'));
+            $typeStmt = $pdo->prepare("SELECT id, COALESCE(product_type, 'medicine') FROM medicines WHERE id IN ($placeholders)");
+            $typeStmt->execute($ids);
+            foreach ($typeStmt->fetchAll(PDO::FETCH_NUM) as $row) {
+                $typeMap[(int)$row[0]] = $row[1];
+            }
+        }
         for ($i = 0; $i < count($meds); $i++) {
-            if (!$meds[$i] || !$qtys[$i] || !$expiries[$i]) continue;
+            if (!$meds[$i] || !$qtys[$i]) continue;
+            $medicineId = (int)$meds[$i];
+            $productType = $typeMap[$medicineId] ?? 'medicine';
+            $expiryRequired = productRequiresExpiry($productType);
+            $expiryDate = normalizeExpiryDate($expiries[$i] ?? '', $expiryRequired);
+            if ($expiryRequired && !$expiryDate) {
+                $missingExpiry = true;
+                continue;
+            }
             $validItems[] = [
-                'medicine_id'    => (int)$meds[$i],
+                'medicine_id'    => $medicineId,
                 'batch_number'   => $batches[$i] ?: 'BATCH-' . date('Ymd') . '-' . ($i+1),
                 'quantity'       => (int)$qtys[$i],
                 'purchase_price' => (float)$pprices[$i],
                 'selling_price'  => (float)$sprices[$i],
-                'expiry_date'    => $expiries[$i],
+                'expiry_date'    => $expiryDate,
             ];
         }
 
-        if (empty($validItems)) {
-            $error = 'Add at least one item with medicine, quantity, and expiry date.';
+        if ($missingExpiry) {
+            $error = 'Expiry date is required for medicines. Cosmetics and equipment can be saved without an expiry date.';
+            $action = 'add';
+        } elseif (empty($validItems)) {
+            $error = 'Add at least one item with a product and quantity.';
             $action = 'add';
         } else {
             $total = array_sum(array_map(fn($it) => $it['purchase_price'] * $it['quantity'], $validItems));
@@ -97,7 +120,7 @@ if ($flash) {
 
 $medicines = [];
 if ($action === 'add') {
-    $medicines = $pdo->query("SELECT id,name FROM medicines ORDER BY name COLLATE NOCASE")->fetchAll();
+    $medicines = $pdo->query("SELECT id, name, COALESCE(product_type,'medicine') AS product_type FROM medicines ORDER BY name COLLATE NOCASE")->fetchAll();
 }
 
 $page = max(1, (int)($_GET['page'] ?? 1));
@@ -155,17 +178,17 @@ renderSidebar();
         <table id="itemsTable">
           <thead>
             <tr>
-              <th>Medicine</th><th>Batch #</th><th>Qty</th>
+              <th>Product</th><th>Batch #</th><th>Qty</th>
               <th>Buy Price</th><th>Sell Price</th><th>Expiry</th><th></th>
             </tr>
           </thead>
           <tbody id="itemsBody">
             <tr class="item-row">
               <td>
-                <select name="medicine_id[]" style="min-width:160px;padding:7px 10px;font-size:13px;background:var(--bg-600);border:1px solid var(--border-strong);color:var(--text-100);border-radius:6px;">
-                  <option value="">Select...</option>
+                <select name="medicine_id[]" onchange="syncRowExpiry(this.closest('tr'))" style="min-width:160px;padding:7px 10px;font-size:13px;background:var(--bg-600);border:1px solid var(--border-strong);color:var(--text-100);border-radius:6px;">
+                  <option value="" data-requires-expiry="0">Select...</option>
                   <?php foreach ($medicines as $m): ?>
-                  <option value="<?= $m['id'] ?>"><?= htmlspecialchars($m['name']) ?></option>
+                  <option value="<?= $m['id'] ?>" data-requires-expiry="<?= productRequiresExpiry($m['product_type'] ?? 'medicine') ? '1' : '0' ?>"><?= htmlspecialchars($m['name']) ?></option>
                   <?php endforeach; ?>
                 </select>
               </td>
@@ -173,7 +196,7 @@ renderSidebar();
               <td><input type="number" name="quantity[]" min="1" value="1" style="<?= inputStyle(80) ?>"></td>
               <td><input type="number" name="purchase_price[]" min="0" step="0.01" value="0" style="<?= inputStyle(90) ?>"></td>
               <td><input type="number" name="selling_price[]" min="0" step="0.01" value="0" style="<?= inputStyle(90) ?>"></td>
-              <td><input type="date" name="expiry_date[]" style="<?= inputStyle() ?>"></td>
+              <td><input type="date" name="expiry_date[]" style="<?= inputStyle() ?>" title="Required for medicines. Optional for cosmetics and equipment."></td>
               <td><button type="button" onclick="removeRow(this)" class="btn btn-danger btn-sm">Del</button></td>
             </tr>
           </tbody>
@@ -189,11 +212,24 @@ renderSidebar();
 </div>
 
 <script>
+function syncRowExpiry(row) {
+  const sel = row.querySelector('select[name="medicine_id[]"]');
+  const expiry = row.querySelector('input[name="expiry_date[]"]');
+  if (!sel || !expiry) return;
+  const opt = sel.options[sel.selectedIndex];
+  const requires = !!(opt && opt.dataset.requiresExpiry === '1');
+  expiry.required = requires;
+  expiry.title = requires
+    ? 'Expiry date is required for medicines'
+    : 'Optional for cosmetics and equipment';
+}
+
 function addRow() {
   const tbody = document.getElementById('itemsBody');
   const row = tbody.querySelector('.item-row').cloneNode(true);
   row.querySelectorAll('input').forEach(i => {
     i.value = (i.type === 'number') ? (i.name.indexOf('quantity') !== -1 ? '1' : '0') : '';
+    if (i.name === 'expiry_date[]') i.required = false;
   });
   const sel = row.querySelector('select');
   if (sel) sel.selectedIndex = 0;

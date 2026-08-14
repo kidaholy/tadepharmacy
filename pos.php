@@ -138,8 +138,9 @@ renderSidebar();
     </div>
     <div class="pos-items-grid" id="medGrid">
       <?php foreach ($medsList as $m):
-        $expDays = (strtotime($m['expiry_date']) - time()) / 86400;
-        $expLabel = $expDays <= 30 ? '<span class="badge badge-orange" style="font-size:10px;">Exp soon</span>' : '';
+        $noExpiry = isNoExpiryDate($m['expiry_date'] ?? '');
+        $expDays = $noExpiry ? 99999 : ((strtotime($m['expiry_date']) - time()) / 86400);
+        $expLabel = (!$noExpiry && $expDays <= 30) ? '<span class="badge badge-orange" style="font-size:10px;">Exp soon</span>' : '';
       ?>
       <div class="med-card"
            data-id="<?= $m['id'] ?>"

@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/sales_lib.php';
 
 $pdo    = getDB();
 $action = $_GET['action'] ?? 'list';
@@ -29,7 +30,8 @@ if ($action === 'export_template' || $action === 'export') {
         // Example rows showing the expected format
         fputcsv($out, ['Antibiotics & Antimicrobials', 'strip', 'Acetazolamide 250mg', 'Acetazolamide']);
         fputcsv($out, ['', 'pk', 'Amoklavin 1gm', 'Amoxicillin + Clavulanic Acid']);
-        fputcsv($out, ['Cardiovascular & Blood Health', 'strip', 'Adipin 10mg', 'Amlodipine']);
+        fputcsv($out, ['Cosmetics', 'tube', 'Nivea Cream 50ml', '']);
+        fputcsv($out, ['Equipment', 'pcs', 'Digital Thermometer', '']);
     } else {
         $rows = $pdo->query("
             SELECT c.name AS category, m.unit, m.name, m.generic_name
@@ -64,19 +66,29 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $unit        = trim($_POST['unit'] ?? 'pcs');
         $description = trim($_POST['description'] ?? '');
         $reorder     = (int)($_POST['reorder_level'] ?? 10);
+        $productType = trim($_POST['product_type'] ?? 'medicine');
+        if (!isset(productTypes()[$productType])) {
+            $catName = null;
+            if ($category_id) {
+                $cstmt = $pdo->prepare('SELECT name FROM categories WHERE id = ?');
+                $cstmt->execute([$category_id]);
+                $catName = $cstmt->fetchColumn() ?: null;
+            }
+            $productType = productTypeFromCategory($catName);
+        }
 
-        if (!$name) { $error = 'Medicine name is required.'; }
+        if (!$name) { $error = 'Product name is required.'; }
         else {
             if ($id) {
-                $pdo->prepare("UPDATE medicines SET name=?,generic_name=?,strength=?,dosage_form=?,category_id=?,unit=?,description=?,reorder_level=? WHERE id=?")
-                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder,$id]);
-                flashSet('success', 'Medicine updated successfully.');
+                $pdo->prepare("UPDATE medicines SET name=?,generic_name=?,strength=?,dosage_form=?,category_id=?,unit=?,description=?,reorder_level=?,product_type=? WHERE id=?")
+                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder,$productType,$id]);
+                flashSet('success', 'Product updated successfully.');
             } else {
-                $pdo->prepare("INSERT INTO medicines (name,generic_name,strength,dosage_form,category_id,unit,description,reorder_level) VALUES (?,?,?,?,?,?,?,?)")
-                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder]);
-                flashSet('success', 'Medicine added successfully.');
+                $pdo->prepare("INSERT INTO medicines (name,generic_name,strength,dosage_form,category_id,unit,description,reorder_level,product_type) VALUES (?,?,?,?,?,?,?,?,?)")
+                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder,$productType]);
+                flashSet('success', 'Product added successfully.');
             }
-            header('Location: medicines.php');
+            header('Location: medicines.php?type=' . urlencode($productType));
             exit;
         }
     }
@@ -85,11 +97,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $id = (int)($_POST['id'] ?? 0);
         try {
             $pdo->prepare("DELETE FROM medicines WHERE id=?")->execute([$id]);
-            flashSet('success', 'Medicine deleted.');
+            flashSet('success', 'Product deleted.');
         } catch (PDOException $e) {
-            flashSet('error', 'Cannot delete medicine: It is linked to existing inventory batches, sales, or purchases.');
+            flashSet('error', 'Cannot delete product: It is linked to existing inventory batches, sales, or purchases.');
         }
-        header('Location: medicines.php');
+        header('Location: medicines.php?type=' . urlencode(trim($_POST['product_type'] ?? 'medicine')));
         exit;
     }
 
@@ -140,12 +152,12 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         }
                         $insCat = $pdo->prepare('INSERT INTO categories (name) VALUES (?)');
                         $insMed = $pdo->prepare(
-                            'INSERT INTO medicines (name, generic_name, category_id, unit, reorder_level) VALUES (?,?,?,?,10)'
+                            'INSERT INTO medicines (name, generic_name, category_id, unit, reorder_level, product_type) VALUES (?,?,?,?,10,?)'
                         );
                         $findMed = $pdo->prepare(
                             'SELECT id FROM medicines WHERE LOWER(name)=LOWER(?) AND LOWER(COALESCE(unit,\'\'))=LOWER(?) LIMIT 1'
                         );
-                        $updMed = $pdo->prepare('UPDATE medicines SET generic_name=?, category_id=? WHERE id=?');
+                        $updMed = $pdo->prepare('UPDATE medicines SET generic_name=?, category_id=?, product_type=? WHERE id=?');
 
                         $added = 0;
                         $skipped = 0;
@@ -187,13 +199,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                                     $categoryId = $catIds[$key];
                                 }
 
+                                $productType = productTypeFromCategory($currentCat);
                                 $findMed->execute([$name, $unit]);
                                 $existingId = $findMed->fetchColumn();
                                 if ($existingId && $mode !== 'replace_all') {
-                                    $updMed->execute([$generic !== '' ? $generic : null, $categoryId, $existingId]);
+                                    $updMed->execute([$generic !== '' ? $generic : null, $categoryId, $productType, $existingId]);
                                     $updated++;
                                 } else {
-                                    $insMed->execute([$name, $generic !== '' ? $generic : null, $categoryId, strtolower($unit)]);
+                                    $insMed->execute([$name, $generic !== '' ? $generic : null, $categoryId, strtolower($unit), $productType]);
                                     $added++;
                                 }
                             }
@@ -235,8 +248,39 @@ if ($action === 'edit' && isset($_GET['id'])) {
 }
 
 // Search / list with pagination
-$search    = trim($_GET['q'] ?? '');
-$catFilter = (int)($_GET['cat'] ?? 0);
+$search     = trim($_GET['q'] ?? '');
+$catFilter  = (int)($_GET['cat'] ?? 0);
+$typeFilter = trim($_GET['type'] ?? 'medicine');
+if (!isset(productTypes()[$typeFilter])) {
+    $typeFilter = 'medicine';
+}
+if ($action === 'edit' && $edit) {
+    $typeFilter = $edit['product_type'] ?? $typeFilter;
+    if (!isset(productTypes()[$typeFilter])) {
+        $typeFilter = 'medicine';
+    }
+}
+$typeMeta = [
+    'medicine'  => ['title' => 'Medicine', 'plural' => 'Medicines', 'add' => 'Add Medicine', 'icon' => 'pill'],
+    'cosmetic'  => ['title' => 'Cosmetics', 'plural' => 'Cosmetics', 'add' => 'Add Cosmetic', 'icon' => 'sparkles'],
+    'equipment' => ['title' => 'Equipment', 'plural' => 'Equipment', 'add' => 'Add Equipment', 'icon' => 'stethoscope'],
+];
+$pageMeta = $typeMeta[$typeFilter];
+$typeCounts = ['medicine' => 0, 'cosmetic' => 0, 'equipment' => 0];
+foreach ($pdo->query("SELECT COALESCE(product_type,'medicine') AS t, COUNT(*) AS c FROM medicines GROUP BY t") as $row) {
+    if (isset($typeCounts[$row['t']])) {
+        $typeCounts[$row['t']] = (int)$row['c'];
+    }
+}
+$defaultCatId = 0;
+foreach ($categories as $c) {
+    if ($typeFilter === 'cosmetic' && strcasecmp($c['name'], 'Cosmetics') === 0) {
+        $defaultCatId = (int) $c['id'];
+    }
+    if ($typeFilter === 'equipment' && strcasecmp($c['name'], 'Equipment') === 0) {
+        $defaultCatId = (int) $c['id'];
+    }
+}
 $page      = max(1, (int)($_GET['page'] ?? 1));
 $perPage   = 50;
 
@@ -244,6 +288,7 @@ $where  = [];
 $params = [];
 if ($search) { $where[] = "(m.name LIKE ? OR m.generic_name LIKE ?)"; $params[] = "%$search%"; $params[] = "%$search%"; }
 if ($catFilter) { $where[] = "m.category_id = ?"; $params[] = $catFilter; }
+if ($typeFilter) { $where[] = "COALESCE(m.product_type, 'medicine') = ?"; $params[] = $typeFilter; }
 $whereSql = $where ? (' WHERE ' . implode(' AND ', $where)) : '';
 
 $countStmt = $pdo->prepare("SELECT COUNT(*) FROM medicines m" . $whereSql);
@@ -265,55 +310,69 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $medicines = $stmt->fetchAll();
 
-$pagerBase = 'medicines.php?' . http_build_query(array_filter(['q' => $search ?: null, 'cat' => $catFilter ?: null]));
+$pagerBase = 'medicines.php?' . http_build_query(array_filter(['q' => $search ?: null, 'cat' => $catFilter ?: null, 'type' => $typeFilter ?: null]));
 
-renderHead('Medicines');
+renderHead($pageMeta['plural']);
 renderSidebar();
 ?>
 <div id="sidebarOverlay" class="overlay-bg" onclick="toggleSidebar()"></div>
 <div class="main-content">
-<?php renderTopbar('Medicines', 'Manage your medicine catalogue'); ?>
+<?php renderTopbar($pageMeta['plural'], 'Three catalogue pages: medicines, cosmetics, and equipment'); ?>
 <div class="page-body">
 
 <?php if ($msg):  ?><div class="alert alert-success auto-hide"><i data-lucide="check-circle"></i><?= htmlspecialchars($msg) ?></div><?php endif; ?>
 <?php if ($error): ?><div class="alert alert-danger"><i data-lucide="x-circle"></i><?= htmlspecialchars($error) ?></div><?php endif; ?>
 
+<div class="admin-tabs catalogue-tabs">
+  <?php foreach ($typeMeta as $key => $meta): ?>
+  <a href="medicines.php?type=<?= $key ?>" class="admin-tab<?= $typeFilter === $key ? ' active' : '' ?>">
+    <i data-lucide="<?= $meta['icon'] ?>"></i>
+    <span><?= htmlspecialchars($meta['title']) ?></span>
+    <span class="badge <?= $typeFilter === $key ? 'badge-blue' : 'badge-gray' ?>"><?= number_format($typeCounts[$key] ?? 0) ?></span>
+  </a>
+  <?php endforeach; ?>
+</div>
+
 <?php if ($action === 'add' || $action === 'edit'): ?>
 <!-- ── FORM ─────────────────────────────────────────────── -->
 <div class="card">
   <div class="card-header">
-    <span class="card-title"><?= $action === 'edit' ? 'Edit Medicine' : 'Add New Medicine' ?></span>
-    <a href="medicines.php" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left"></i> Back</a>
+    <span class="card-title"><?= $action === 'edit' ? 'Edit ' . $pageMeta['title'] : $pageMeta['add'] ?></span>
+    <a href="medicines.php?type=<?= urlencode($typeFilter) ?>" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left"></i> Back</a>
   </div>
   <form method="POST">
     <input type="hidden" name="act" value="save">
     <input type="hidden" name="id" value="<?= $edit['id'] ?? 0 ?>">
+    <input type="hidden" name="product_type" value="<?= htmlspecialchars($typeFilter) ?>">
     <div class="form-row">
       <div class="form-group">
         <label>Category</label>
         <select name="category_id">
           <option value="">— Select Category —</option>
-          <?php foreach ($categories as $c): ?>
-          <option value="<?= $c['id'] ?>" <?= (($edit['category_id'] ?? '') == $c['id']) ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
+          <?php foreach ($categories as $c):
+            $selectedId = (int)($edit['category_id'] ?? $defaultCatId);
+          ?>
+          <option value="<?= $c['id'] ?>" <?= $selectedId === (int)$c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
           <?php endforeach; ?>
         </select>
       </div>
       <div class="form-group">
         <label>Dispensing Unit</label>
         <select name="unit">
-          <?php foreach (['strip','pk','bottle','sachet','ampoule','tube','suppository','effervescent','puff','pis','tin','vial','pcs','tablet','capsule','ml','L'] as $u): ?>
+          <?php foreach (productUnits() as $u): ?>
           <option value="<?= $u ?>" <?= (($edit['unit'] ?? 'strip') === $u) ? 'selected' : '' ?>><?= $u ?></option>
           <?php endforeach; ?>
         </select>
       </div>
       <div class="form-group">
         <label>Product Name *</label>
-        <input type="text" name="name" value="<?= htmlspecialchars($edit['name'] ?? '') ?>" required placeholder="e.g. Amoklavin 1gm">
+        <input type="text" name="name" value="<?= htmlspecialchars($edit['name'] ?? '') ?>" required placeholder="<?= $typeFilter === 'medicine' ? 'e.g. Amoklavin 1gm' : ($typeFilter === 'cosmetic' ? 'e.g. Nivea Cream 50ml' : 'e.g. Digital Thermometer') ?>">
       </div>
       <div class="form-group">
-        <label>Generic / Active Ingredient</label>
-        <input type="text" name="generic_name" value="<?= htmlspecialchars($edit['generic_name'] ?? '') ?>" placeholder="e.g. Amoxicillin + Clavulanic Acid">
+        <label><?= $typeFilter === 'medicine' ? 'Generic / Active Ingredient' : 'Brand / Description' ?></label>
+        <input type="text" name="generic_name" value="<?= htmlspecialchars($edit['generic_name'] ?? '') ?>" placeholder="<?= $typeFilter === 'medicine' ? 'e.g. Amoxicillin + Clavulanic Acid' : 'Optional' ?>">
       </div>
+      <?php if ($typeFilter === 'medicine'): ?>
       <div class="form-group">
         <label>Strength</label>
         <input type="text" name="strength" value="<?= htmlspecialchars($edit['strength'] ?? '') ?>" placeholder="e.g. 500mg, 10mg/ml">
@@ -322,6 +381,10 @@ renderSidebar();
         <label>Dosage Form</label>
         <input type="text" name="dosage_form" value="<?= htmlspecialchars($edit['dosage_form'] ?? '') ?>" placeholder="e.g. Tablet, Syrup, Injection">
       </div>
+      <?php else: ?>
+      <input type="hidden" name="strength" value="<?= htmlspecialchars($edit['strength'] ?? '') ?>">
+      <input type="hidden" name="dosage_form" value="<?= htmlspecialchars($edit['dosage_form'] ?? '') ?>">
+      <?php endif; ?>
       <div class="form-group">
         <label>Reorder Level</label>
         <input type="number" name="reorder_level" value="<?= $edit['reorder_level'] ?? 10 ?>" min="0">
@@ -332,8 +395,8 @@ renderSidebar();
       <textarea name="description" placeholder="Optional notes..."><?= htmlspecialchars($edit['description'] ?? '') ?></textarea>
     </div>
     <div class="form-actions">
-      <button type="submit" class="btn btn-primary"><i data-lucide="save"></i> <?= $action === 'edit' ? 'Update' : 'Add Medicine' ?></button>
-      <a href="medicines.php" class="btn btn-ghost">Cancel</a>
+      <button type="submit" class="btn btn-primary"><i data-lucide="save"></i> <?= $action === 'edit' ? 'Update' : $pageMeta['add'] ?></button>
+      <a href="medicines.php?type=<?= urlencode($typeFilter) ?>" class="btn btn-ghost">Cancel</a>
     </div>
   </form>
 </div>
@@ -342,14 +405,14 @@ renderSidebar();
 <!-- ── LIST ─────────────────────────────────────────────── -->
 <div class="card">
   <div class="card-header" style="flex-wrap:wrap;gap:10px;">
-    <span class="card-title">Medicines (<?= number_format($totalMeds) ?>)</span>
+    <span class="card-title"><?= htmlspecialchars($pageMeta['plural']) ?> (<?= number_format($totalMeds) ?>)</span>
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <a href="medicines.php?action=export_template" class="btn btn-ghost btn-sm"><i data-lucide="file-down"></i> CSV Template</a>
       <a href="medicines.php?action=export" class="btn btn-ghost btn-sm"><i data-lucide="download"></i> Export CSV</a>
       <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('importPanel').style.display = document.getElementById('importPanel').style.display === 'none' ? 'block' : 'none'">
         <i data-lucide="upload"></i> Import CSV
       </button>
-      <a href="medicines.php?action=add" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> Add Medicine</a>
+      <a href="medicines.php?action=add&type=<?= urlencode($typeFilter) ?>" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> <?= htmlspecialchars($pageMeta['add']) ?></a>
     </div>
   </div>
 
@@ -377,9 +440,10 @@ renderSidebar();
 
   <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
     <form method="GET" style="display:flex;gap:10px;flex:1;min-width:260px;">
+      <input type="hidden" name="type" value="<?= htmlspecialchars($typeFilter) ?>">
       <div class="search-bar" style="flex:1;">
         <i data-lucide="search"></i>
-        <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" placeholder="Search medicines...">
+        <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" placeholder="Search <?= strtolower($pageMeta['plural']) ?>...">
       </div>
       <select name="cat" style="width:180px;">
         <option value="">All Categories</option>
@@ -388,7 +452,7 @@ renderSidebar();
         <?php endforeach; ?>
       </select>
       <button type="submit" class="btn btn-ghost">Filter</button>
-      <?php if ($search || $catFilter): ?><a href="medicines.php" class="btn btn-ghost">Clear</a><?php endif; ?>
+      <?php if ($search || $catFilter): ?><a href="medicines.php?type=<?= urlencode($typeFilter) ?>" class="btn btn-ghost">Clear</a><?php endif; ?>
     </form>
   </div>
 
@@ -399,14 +463,14 @@ renderSidebar();
           <th>Category</th>
           <th>Dispensing Unit</th>
           <th>Product Name</th>
-          <th>Generic / Active Ingredient</th>
+          <th><?= $typeFilter === 'medicine' ? 'Generic / Active Ingredient' : 'Brand / Description' ?></th>
           <th>Stock</th>
           <th>Actions</th>
         </tr>
       </thead>
       <tbody>
       <?php if (empty($medicines)): ?>
-        <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-300);">No medicines found</td></tr>
+        <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-300);">No <?= htmlspecialchars(strtolower($pageMeta['plural'])) ?> found</td></tr>
       <?php else: ?>
       <?php
         $prevCat = null;
@@ -423,11 +487,12 @@ renderSidebar();
           <td><span class="badge <?= $stockClass ?>"><?= number_format($m['stock']) ?></span></td>
           <td>
             <div class="row-actions">
-              <a href="medicines.php?action=edit&id=<?= $m['id'] ?>" class="btn btn-ghost btn-sm">Edit</a>
+              <a href="medicines.php?action=edit&type=<?= urlencode($typeFilter) ?>&id=<?= $m['id'] ?>" class="btn btn-ghost btn-sm">Edit</a>
               <a href="inventory.php?med=<?= $m['id'] ?>" class="btn btn-ghost btn-sm">Stock</a>
               <form method="POST" onsubmit="return confirmDelete(this)">
                 <input type="hidden" name="act" value="delete">
                 <input type="hidden" name="id" value="<?= $m['id'] ?>">
+                <input type="hidden" name="product_type" value="<?= htmlspecialchars($typeFilter) ?>">
                 <button type="submit" class="btn btn-danger btn-sm">Del</button>
               </form>
             </div>

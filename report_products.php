@@ -126,12 +126,13 @@ renderSidebar();
       <thead><tr><th>Batch</th><th>Expiry</th><th>Qty</th><th>Status</th></tr></thead>
       <tbody>
       <?php foreach ($productDetail['batches'] as $b):
-        $days = (int)((strtotime($b['expiry_date']) - time()) / 86400);
-        $st = $days < 0 ? 'Expired' : ($days <= 30 ? 'Near Expiry' : 'Good');
+        $noExpiry = isNoExpiryDate($b['expiry_date'] ?? '');
+        $days = $noExpiry ? 99999 : (int)((strtotime($b['expiry_date']) - time()) / 86400);
+        $st = $noExpiry ? 'No expiry' : ($days < 0 ? 'Expired' : ($days <= 30 ? 'Near Expiry' : 'Good'));
       ?>
       <tr>
         <td><code><?= htmlspecialchars($b['batch_number']) ?></code></td>
-        <td><?= date('M j, Y', strtotime($b['expiry_date'])) ?></td>
+        <td><?= formatExpiryDate($b['expiry_date']) ?></td>
         <td><?= number_format($b['quantity']) ?></td>
         <td><span class="badge badge-gray"><?= $st ?></span></td>
       </tr>

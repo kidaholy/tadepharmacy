@@ -763,6 +763,20 @@ textarea { resize: vertical; min-height: 90px; }
   border-color: rgba(79, 142, 247, 0.45);
   color: var(--accent);
 }
+.catalogue-tabs {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.catalogue-tabs .admin-tab {
+  justify-content: center;
+  padding: 14px 12px;
+  font-size: 14px;
+  font-weight: 600;
+}
+@media (max-width: 720px) {
+  .catalogue-tabs { grid-template-columns: 1fr; }
+}
 .admin-grid .card { margin-bottom: 0; }
 .perm-matrix-wrap {
   overflow-x: auto;

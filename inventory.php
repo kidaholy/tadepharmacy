@@ -1,5 +1,6 @@
 <?php
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/sales_lib.php';
 
 $pdo = getDB();
 $msg = '';
@@ -22,8 +23,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $expiryDate     = trim($_POST['expiry_date'] ?? '');
         $manufactureDate = trim($_POST['manufacture_date'] ?? '') ?: null;
 
-        if (!$medicineId || !$batchNumber || !$expiryDate) {
-            $error = 'Medicine, batch number, and expiry date are required.';
+        $typeStmt = $pdo->prepare("SELECT COALESCE(product_type, 'medicine') FROM medicines WHERE id=?");
+        $typeStmt->execute([$medicineId]);
+        $productType = $typeStmt->fetchColumn() ?: 'medicine';
+        $expiryRequired = productRequiresExpiry($productType);
+        $expiryDate = normalizeExpiryDate($expiryDate, $expiryRequired);
+
+        if (!$medicineId || !$batchNumber || ($expiryRequired && !$expiryDate)) {
+            $error = $expiryRequired
+                ? 'Medicine, batch number, and expiry date are required.'
+                : 'Product and batch number are required.';
         } elseif ($quantity < 0 || $purchasePrice < 0 || $sellingPrice < 0) {
             $error = 'Quantity and prices cannot be negative.';
         } else {
@@ -64,7 +73,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 }
 
 $sql = "
-    SELECT b.*, m.name as med_name, m.reorder_level, m.unit, c.name as cat_name
+    SELECT b.*, m.name as med_name, m.reorder_level, m.unit,
+           COALESCE(m.product_type, 'medicine') AS product_type, c.name as cat_name
     FROM batches b
     JOIN medicines m ON m.id = b.medicine_id
     LEFT JOIN categories c ON c.id = m.category_id
@@ -80,8 +90,8 @@ if ($search) {
 if ($medId)   { $where[] = "b.medicine_id = ?"; $params[] = $medId; }
 
 if ($filter === 'low')      { $where[] = "b.quantity > 0 AND b.quantity <= m.reorder_level"; }
-if ($filter === 'expired')  { $where[] = "b.expiry_date < date('now')"; }
-if ($filter === 'expiring') { $where[] = "b.expiry_date BETWEEN date('now') AND date('now','+30 days') AND b.quantity > 0"; }
+if ($filter === 'expired')  { $where[] = "b.expiry_date < date('now') AND b.expiry_date < '9000-01-01'"; }
+if ($filter === 'expiring') { $where[] = "b.expiry_date BETWEEN date('now') AND date('now','+30 days') AND b.quantity > 0 AND b.expiry_date < '9000-01-01'"; }
 if ($filter === 'out')      { $where[] = "b.quantity = 0"; }
 
 if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
@@ -91,15 +101,15 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $batches = $stmt->fetchAll();
 
-$medicines = $pdo->query("SELECT id, name, unit FROM medicines ORDER BY name")->fetchAll();
+$medicines = $pdo->query("SELECT id, name, unit, COALESCE(product_type,'medicine') AS product_type FROM medicines ORDER BY name")->fetchAll();
 $currency  = getSetting('currency', 'ETB');
 
 // Summary counts
 $counts = [
     'all'      => $pdo->query("SELECT COUNT(*) FROM batches")->fetchColumn(),
     'low'      => $pdo->query("SELECT COUNT(*) FROM batches b JOIN medicines m ON m.id=b.medicine_id WHERE b.quantity > 0 AND b.quantity <= m.reorder_level")->fetchColumn(),
-    'expired'  => $pdo->query("SELECT COUNT(*) FROM batches WHERE expiry_date < date('now')")->fetchColumn(),
-    'expiring' => $pdo->query("SELECT COUNT(*) FROM batches WHERE expiry_date BETWEEN date('now') AND date('now','+30 days') AND quantity > 0")->fetchColumn(),
+    'expired'  => $pdo->query("SELECT COUNT(*) FROM batches WHERE expiry_date < date('now') AND expiry_date < '9000-01-01'")->fetchColumn(),
+    'expiring' => $pdo->query("SELECT COUNT(*) FROM batches WHERE expiry_date BETWEEN date('now') AND date('now','+30 days') AND quantity > 0 AND expiry_date < '9000-01-01'")->fetchColumn(),
     'out'      => $pdo->query("SELECT COUNT(*) FROM batches WHERE quantity = 0")->fetchColumn(),
 ];
 
@@ -159,11 +169,17 @@ renderSidebar();
         <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-300);">No batches match your filter</td></tr>
       <?php else: ?>
       <?php foreach ($batches as $b):
-        $days = (strtotime($b['expiry_date']) - time()) / 86400;
-        if ($days < 0)        { $statusClass = 'badge-red';    $statusLabel = 'Expired'; }
-        elseif ($days <= 7)   { $statusClass = 'badge-red';    $statusLabel = 'Critical'; }
-        elseif ($days <= 30)  { $statusClass = 'badge-orange'; $statusLabel = 'Expiring'; }
-        else                  { $statusClass = 'badge-green';  $statusLabel = 'Good'; }
+        $noExpiry = isNoExpiryDate($b['expiry_date'] ?? '');
+        if ($noExpiry) {
+            $statusClass = 'badge-green';
+            $statusLabel = 'No expiry';
+        } else {
+            $days = (strtotime($b['expiry_date']) - time()) / 86400;
+            if ($days < 0)        { $statusClass = 'badge-red';    $statusLabel = 'Expired'; }
+            elseif ($days <= 7)   { $statusClass = 'badge-red';    $statusLabel = 'Critical'; }
+            elseif ($days <= 30)  { $statusClass = 'badge-orange'; $statusLabel = 'Expiring'; }
+            else                  { $statusClass = 'badge-green';  $statusLabel = 'Good'; }
+        }
         if ($b['quantity'] == 0) { $statusClass = 'badge-gray'; $statusLabel = 'Out'; }
 
         $qtyClass = $b['quantity'] == 0 ? 'badge-gray' : ($b['quantity'] <= $b['reorder_level'] ? 'badge-orange' : 'badge-green');
@@ -175,7 +191,7 @@ renderSidebar();
         <td><span class="badge <?= $qtyClass ?>"><?= number_format($b['quantity']) ?> <?= htmlspecialchars($b['unit']) ?></span></td>
         <td style="color:var(--text-300);"><?= currency($b['purchase_price']) ?></td>
         <td style="color:var(--accent2);font-weight:700;"><?= currency($b['selling_price']) ?></td>
-        <td style="font-size:12px;"><?= date('M d, Y', strtotime($b['expiry_date'])) ?></td>
+        <td style="font-size:12px;"><?= formatExpiryDate($b['expiry_date']) ?></td>
         <td><span class="badge <?= $statusClass ?>"><?= $statusLabel ?></span></td>
         <td>
           <div class="row-actions">
@@ -188,7 +204,7 @@ renderSidebar();
                 'quantity'        => (int)$b['quantity'],
                 'purchase_price'  => (float)$b['purchase_price'],
                 'selling_price'   => (float)$b['selling_price'],
-                'expiry_date'     => $b['expiry_date'],
+                'expiry_date'     => isNoExpiryDate($b['expiry_date'] ?? '') ? '' : $b['expiry_date'],
                 'manufacture_date'=> $b['manufacture_date'] ?? '',
               ]), ENT_QUOTES) ?>)'>Edit</button>
             <form method="POST" onsubmit="return confirmDelete(this)">
@@ -219,9 +235,9 @@ renderSidebar();
         <input type="hidden" name="batch_id" id="editBatchId">
         <div class="form-group">
           <label>Medicine</label>
-          <select name="medicine_id" id="editMedicineId" required>
+          <select name="medicine_id" id="editMedicineId" required onchange="syncEditExpiryRequired()">
             <?php foreach ($medicines as $m): ?>
-            <option value="<?= $m['id'] ?>"><?= htmlspecialchars($m['name']) ?> (<?= htmlspecialchars($m['unit']) ?>)</option>
+            <option value="<?= $m['id'] ?>" data-requires-expiry="<?= productRequiresExpiry($m['product_type'] ?? 'medicine') ? '1' : '0' ?>"><?= htmlspecialchars($m['name']) ?> (<?= htmlspecialchars($m['unit']) ?>)</option>
             <?php endforeach; ?>
           </select>
         </div>
@@ -235,8 +251,8 @@ renderSidebar();
             <input type="number" name="quantity" id="editQuantity" min="0" step="1" required>
           </div>
           <div class="form-group">
-            <label>Expiry Date</label>
-            <input type="date" name="expiry_date" id="editExpiryDate" required>
+            <label>Expiry Date <span id="editExpiryHint" style="color:var(--text-300);font-weight:400;"></span></label>
+            <input type="date" name="expiry_date" id="editExpiryDate">
           </div>
         </div>
         <div class="form-row">
@@ -265,6 +281,16 @@ renderSidebar();
 </div></div>
 
 <script>
+function syncEditExpiryRequired() {
+  const sel = document.getElementById('editMedicineId');
+  const opt = sel.options[sel.selectedIndex];
+  const requires = !!(opt && opt.dataset.requiresExpiry === '1');
+  const input = document.getElementById('editExpiryDate');
+  const hint = document.getElementById('editExpiryHint');
+  input.required = requires;
+  if (hint) hint.textContent = requires ? '' : '(optional for cosmetics & equipment)';
+}
+
 function openEditModal(batch) {
   document.getElementById('editBatchId').value         = batch.id;
   document.getElementById('editMedicineId').value      = batch.medicine_id;
@@ -272,8 +298,9 @@ function openEditModal(batch) {
   document.getElementById('editQuantity').value        = batch.quantity;
   document.getElementById('editPurchasePrice').value   = batch.purchase_price;
   document.getElementById('editSellingPrice').value    = batch.selling_price;
-  document.getElementById('editExpiryDate').value      = batch.expiry_date;
+  document.getElementById('editExpiryDate').value      = batch.expiry_date || '';
   document.getElementById('editManufactureDate').value = batch.manufacture_date || '';
+  syncEditExpiryRequired();
   openModal('editModal');
 }
 </script>
