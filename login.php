@@ -2,15 +2,15 @@
 require_once __DIR__ . '/auth.php';
 
 if (isLoggedIn()) {
-    header('Location: index.php');
+    refreshUserSession((int) currentUser()['id']);
+    header('Location: ' . homePage());
     exit;
 }
 
 $error = '';
-$redirect = $_GET['redirect'] ?? $_POST['redirect'] ?? 'index.php';
-// Prevent open redirects
-if (!preg_match('/^[a-z0-9_\-\/\.?=&%]+$/i', $redirect) || str_contains($redirect, '//')) {
-    $redirect = 'index.php';
+$redirect = $_GET['redirect'] ?? $_POST['redirect'] ?? '';
+if ($redirect !== '' && (!preg_match('/^[a-z0-9_\-\/\.?=&%]+$/i', $redirect) || str_contains($redirect, '//'))) {
+    $redirect = '';
 }
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -20,7 +20,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if ($username === '' || $password === '') {
         $error = 'Please enter both username and password.';
     } elseif (attemptLogin($username, $password)) {
-        header('Location: ' . $redirect);
+        $target = $redirect !== '' ? $redirect : homePage();
+        $targetPage = basename(parse_url($target, PHP_URL_PATH) ?: $target, '.php');
+        $needed = pagePermissionMap()[$targetPage] ?? null;
+        if ($needed !== null) {
+            $ok = is_array($needed) ? canAny($needed) : can($needed);
+            if (!$ok) {
+                $target = homePage();
+            }
+        }
+        header('Location: ' . $target);
         exit;
     } else {
         $error = 'Invalid username or password.';

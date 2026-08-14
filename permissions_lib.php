@@ -142,7 +142,7 @@ function seedPermissionsAndRoles(PDO $pdo): void {
 
     if ($cashierRoleId) {
         seedRolePermissionsIfEmpty($pdo, $cashierRoleId, allowPermissions([
-            'dashboard.view', 'pos.access',
+            'pos.access',
             'sales.view', 'sales.manage',
             'customers.view', 'customers.manage',
         ]));

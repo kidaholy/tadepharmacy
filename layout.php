@@ -7,28 +7,13 @@ if (str_starts_with($currentPage, 'report_')) {
     $currentPage = 'reports';
 }
 
-$pagePermissions = [
-    'index'         => 'dashboard.view',
-    'medicines'     => 'medicines.view',
-    'sales'         => 'sales.view',
-    'customers'     => 'customers.view',
-    'pos'           => 'pos.access',
-    'purchases'     => 'purchases.view',
-    'inventory'     => 'inventory.view',
-    'reports'       => 'reports.view',
-    'settings'      => 'settings.view',
-    'landing_cms'   => 'landing.edit',
-    'administrator' => null,
-];
-
-if ($currentPage === 'administrator') {
-    if (!canAny(['users.manage', 'roles.manage'])) {
-        header('Location: index.php');
-        exit;
+$pagePermissions = pagePermissionMap();
+$requiredPerm = $pagePermissions[$currentPage] ?? null;
+if ($requiredPerm !== null) {
+    $allowed = is_array($requiredPerm) ? canAny($requiredPerm) : can($requiredPerm);
+    if (!$allowed) {
+        redirectHome();
     }
-} elseif (isset($pagePermissions[$currentPage]) && $pagePermissions[$currentPage] && !can($pagePermissions[$currentPage])) {
-    header('Location: index.php');
-    exit;
 }
 
 $pharmacyName = getSetting('pharmacy_name', 'TADE PHARMACY');

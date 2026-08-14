@@ -3,6 +3,8 @@ require_once __DIR__ . '/layout.php';
 
 $pdo = getDB();
 $msg = '';
+$error = '';
+require_once __DIR__ . '/notifications_lib.php';
 
 $fields = [
     'pharmacy_name'    => ['label' => 'Pharmacy Name',    'type' => 'text'],
@@ -15,12 +17,9 @@ $fields = [
 ];
 
 $notifyFields = [
-    'telegram_enabled'      => ['label' => 'Enable Telegram Alerts', 'type' => 'checkbox'],
-    'telegram_bot_token'    => ['label' => 'Telegram Bot Token',     'type' => 'text'],
-    'telegram_chat_id'      => ['label' => 'Telegram Chat ID',       'type' => 'text'],
-    'whatsapp_enabled'      => ['label' => 'Enable WhatsApp Alerts', 'type' => 'checkbox'],
-    'whatsapp_api_url'      => ['label' => 'WhatsApp API URL',       'type' => 'text'],
-    'whatsapp_notify_phone' => ['label' => 'WhatsApp Notify Phone',  'type' => 'tel'],
+    'telegram_enabled'   => ['label' => 'Enable Telegram Alerts', 'type' => 'checkbox'],
+    'telegram_bot_token' => ['label' => 'Telegram Bot Token',     'type' => 'text'],
+    'telegram_chat_id'   => ['label' => 'Telegram Chat ID',       'type' => 'text'],
 ];
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -29,16 +28,38 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: settings.php');
         exit;
     }
-    $stmt = $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
-    foreach (array_merge($fields, $notifyFields) as $key => $def) {
-        if ($def['type'] === 'checkbox') {
-            $val = isset($_POST[$key]) ? '1' : '0';
+    if (($_POST['act'] ?? '') === 'test_notify') {
+        $results = sendNotification("<b>TADE Pharmacy test</b>\nIf you received this, notification settings are working.");
+        if (!$results) {
+            $error = 'Enable Telegram first, save settings, then send a test.';
         } else {
-            $val = trim($_POST[$key] ?? '');
+            $parts = [];
+            foreach ($results as $channel => $result) {
+                $label = ucfirst($channel);
+                $parts[] = !empty($result['ok'])
+                    ? "$label: sent"
+                    : "$label: " . ($result['error'] ?? 'failed');
+            }
+            $okCount = count(array_filter($results, static fn($r) => !empty($r['ok'])));
+            if ($okCount > 0) {
+                $msg = implode(' · ', $parts);
+            } else {
+                $error = implode(' · ', $parts);
+            }
         }
-        $stmt->execute([$key, $val]);
+    } else {
+        $stmt = $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
+        foreach (array_merge($fields, $notifyFields) as $key => $def) {
+            if ($def['type'] === 'checkbox') {
+                $val = isset($_POST[$key]) ? '1' : '0';
+            } else {
+                $val = trim($_POST[$key] ?? '');
+            }
+            $stmt->execute([$key, $val]);
+        }
+        clearSettingsCache();
+        $msg = 'Settings saved successfully!';
     }
-    $msg = 'Settings saved successfully!';
 }
 
 // Reload
@@ -65,6 +86,7 @@ renderSidebar();
 <div class="page-body">
 
 <?php if ($msg): ?><div class="alert alert-success auto-hide"><i data-lucide="check-circle"></i><?= htmlspecialchars($msg) ?></div><?php endif; ?>
+<?php if ($error): ?><div class="alert alert-danger"><i data-lucide="alert-circle"></i><?= htmlspecialchars($error) ?></div><?php endif; ?>
 <?php $flash = flashGet(); if ($flash): ?>
 <div class="alert alert-<?= $flash['type'] === 'success' ? 'success' : 'danger' ?> auto-hide">
   <i data-lucide="<?= $flash['type'] === 'success' ? 'check-circle' : 'alert-circle' ?>"></i>
@@ -123,7 +145,11 @@ renderSidebar();
         <button type="submit" class="btn btn-primary"><i data-lucide="bell"></i> Save Notifications</button>
       </div>
     </form>
-    <p style="font-size:12px;color:var(--text-300);margin-top:12px;">Alerts: new credit sale, credit due tomorrow, overdue credit, low stock, out of stock.</p>
+    <form method="POST" style="margin-top:10px;">
+      <input type="hidden" name="act" value="test_notify">
+      <button type="submit" class="btn btn-ghost"><i data-lucide="send"></i> Send test notification</button>
+    </form>
+    <p style="font-size:12px;color:var(--text-300);margin-top:12px;">Alerts: new credit sale, credit due tomorrow, overdue credit, low stock, out of stock. Save settings first, then send a test. Telegram needs a BotFather token and chat ID.</p>
   </div>
 
   <!-- DB Stats & Info -->

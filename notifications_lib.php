@@ -6,19 +6,20 @@ function notifyEnabled(string $channel): bool {
     return getSetting("{$channel}_enabled", '0') === '1';
 }
 
-function sendNotification(string $message): void {
+function sendNotification(string $message): array {
+    $results = [];
     if (notifyEnabled('telegram')) {
-        sendTelegram($message);
+        $results['telegram'] = sendTelegram($message);
     }
-    if (notifyEnabled('whatsapp')) {
-        sendWhatsApp($message);
-    }
+    return $results;
 }
 
-function sendTelegram(string $message): void {
-    $token  = getSetting('telegram_bot_token', '');
-    $chatId = getSetting('telegram_chat_id', '');
-    if (!$token || !$chatId) return;
+function sendTelegram(string $message): array {
+    $token  = trim(getSetting('telegram_bot_token', ''));
+    $chatId = trim(getSetting('telegram_chat_id', ''));
+    if ($token === '' || $chatId === '') {
+        return ['ok' => false, 'error' => 'Telegram bot token or chat ID is missing.'];
+    }
 
     $url = "https://api.telegram.org/bot{$token}/sendMessage";
     $payload = http_build_query([
@@ -28,27 +29,22 @@ function sendTelegram(string $message): void {
     ]);
 
     $ctx = stream_context_create(['http' => [
-        'method'  => 'POST',
-        'header'  => 'Content-Type: application/x-www-form-urlencoded',
-        'content' => $payload,
-        'timeout' => 5,
+        'method'        => 'POST',
+        'header'        => "Content-Type: application/x-www-form-urlencoded\r\n",
+        'content'       => $payload,
+        'timeout'       => 8,
+        'ignore_errors' => true,
     ]]);
-    @file_get_contents($url, false, $ctx);
-}
+    $result = @file_get_contents($url, false, $ctx);
+    if ($result === false) {
+        return ['ok' => false, 'error' => 'Could not reach Telegram. Check internet access and that PHP allow_url_fopen is On.'];
+    }
 
-function sendWhatsApp(string $message): void {
-    $url   = getSetting('whatsapp_api_url', '');
-    $phone = getSetting('whatsapp_notify_phone', '');
-    if (!$url || !$phone) return;
-
-    $payload = json_encode(['phone' => $phone, 'message' => $message]);
-    $ctx = stream_context_create(['http' => [
-        'method'  => 'POST',
-        'header'  => "Content-Type: application/json\r\n",
-        'content' => $payload,
-        'timeout' => 5,
-    ]]);
-    @file_get_contents($url, false, $ctx);
+    $json = json_decode($result, true);
+    if (!empty($json['ok'])) {
+        return ['ok' => true];
+    }
+    return ['ok' => false, 'error' => $json['description'] ?? 'Telegram rejected the request.'];
 }
 
 function notifyNewCreditSale(array $sale, array $customer): void {

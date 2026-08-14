@@ -290,20 +290,27 @@ function initDB(PDO $pdo): void {
     initPermissionsSchema($pdo);
 }
 
-function getSetting(string $key, string $default = ''): string {
+function settingsCache(bool $reset = false): array {
     static $cache = null;
+    if ($reset) {
+        $cache = null;
+    }
     if ($cache === null) {
         $cache = [];
         foreach (getDB()->query('SELECT key, value FROM settings') as $row) {
             $cache[$row['key']] = $row['value'];
         }
     }
+    return $cache;
+}
+
+function getSetting(string $key, string $default = ''): string {
+    $cache = settingsCache();
     return $cache[$key] ?? $default;
 }
 
 function clearSettingsCache(): void {
-    // Force reload on next getSetting by re-including is awkward with static —
-    // callers that write settings should redirect; cache is per-request anyway.
+    settingsCache(true);
 }
 
 function generateInvoice(): string {
