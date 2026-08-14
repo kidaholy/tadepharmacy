@@ -296,6 +296,175 @@ function initDB(PDO $pdo): void {
 
     require_once __DIR__ . '/permissions_lib.php';
     initPermissionsSchema($pdo);
+    initPurchaseModuleSchema($pdo);
+}
+
+function initPurchaseModuleSchema(PDO $pdo): void {
+    foreach ([
+        "ALTER TABLE suppliers ADD COLUMN supplier_code TEXT",
+        "ALTER TABLE suppliers ADD COLUMN company_name TEXT",
+        "ALTER TABLE suppliers ADD COLUMN tax_number TEXT",
+        "ALTER TABLE suppliers ADD COLUMN payment_terms TEXT DEFAULT '30'",
+        "ALTER TABLE suppliers ADD COLUMN default_credit_days INTEGER DEFAULT 30",
+        "ALTER TABLE suppliers ADD COLUMN opening_balance REAL DEFAULT 0",
+        "ALTER TABLE suppliers ADD COLUMN status TEXT DEFAULT 'active'",
+        "ALTER TABLE suppliers ADD COLUMN notes TEXT",
+        "ALTER TABLE suppliers ADD COLUMN updated_at DATETIME",
+        "ALTER TABLE purchases ADD COLUMN purchase_number TEXT",
+        "ALTER TABLE purchases ADD COLUMN purchase_date DATE",
+        "ALTER TABLE purchases ADD COLUMN due_date DATE",
+        "ALTER TABLE purchases ADD COLUMN payment_terms TEXT DEFAULT '30'",
+        "ALTER TABLE purchases ADD COLUMN subtotal REAL DEFAULT 0",
+        "ALTER TABLE purchases ADD COLUMN discount REAL DEFAULT 0",
+        "ALTER TABLE purchases ADD COLUMN tax REAL DEFAULT 0",
+        "ALTER TABLE purchases ADD COLUMN grand_total REAL DEFAULT 0",
+        "ALTER TABLE purchases ADD COLUMN total_paid REAL DEFAULT 0",
+        "ALTER TABLE purchases ADD COLUMN total_due REAL DEFAULT 0",
+        "ALTER TABLE purchases ADD COLUMN total_returned REAL DEFAULT 0",
+        "ALTER TABLE purchases ADD COLUMN payment_status TEXT DEFAULT 'unpaid'",
+        "ALTER TABLE purchases ADD COLUMN status TEXT DEFAULT 'received'",
+        "ALTER TABLE purchases ADD COLUMN warehouse TEXT DEFAULT 'Main Store'",
+        "ALTER TABLE purchases ADD COLUMN created_by INTEGER",
+        "ALTER TABLE purchases ADD COLUMN received_at DATETIME",
+        "ALTER TABLE purchases ADD COLUMN approved_by INTEGER",
+        "ALTER TABLE purchases ADD COLUMN approved_at DATETIME",
+        "ALTER TABLE purchases ADD COLUMN updated_at DATETIME",
+        "ALTER TABLE purchase_items ADD COLUMN batch_id INTEGER",
+        "ALTER TABLE purchase_items ADD COLUMN manufacturing_date DATE",
+        "ALTER TABLE purchase_items ADD COLUMN free_quantity INTEGER DEFAULT 0",
+        "ALTER TABLE purchase_items ADD COLUMN discount REAL DEFAULT 0",
+        "ALTER TABLE purchase_items ADD COLUMN tax REAL DEFAULT 0",
+        "ALTER TABLE purchase_items ADD COLUMN line_total REAL DEFAULT 0",
+        "ALTER TABLE purchase_items ADD COLUMN returned_quantity INTEGER DEFAULT 0",
+        "ALTER TABLE batches ADD COLUMN purchase_id INTEGER",
+        "ALTER TABLE batches ADD COLUMN quantity_received INTEGER DEFAULT 0",
+        "ALTER TABLE batches ADD COLUMN free_quantity INTEGER DEFAULT 0",
+        "ALTER TABLE batches ADD COLUMN status TEXT DEFAULT 'active'",
+    ] as $sql) {
+        try { $pdo->exec($sql); } catch (PDOException $e) { /* already applied */ }
+    }
+
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS purchase_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            purchase_id INTEGER NOT NULL,
+            supplier_id INTEGER,
+            payment_date DATE NOT NULL,
+            amount REAL NOT NULL DEFAULT 0,
+            payment_method TEXT NOT NULL DEFAULT 'cash',
+            reference_number TEXT,
+            notes TEXT,
+            created_by INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (purchase_id) REFERENCES purchases(id),
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL,
+            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS purchase_returns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            return_number TEXT NOT NULL UNIQUE,
+            purchase_id INTEGER NOT NULL,
+            supplier_id INTEGER,
+            return_date DATE NOT NULL,
+            total_amount REAL NOT NULL DEFAULT 0,
+            reason TEXT,
+            status TEXT DEFAULT 'completed',
+            created_by INTEGER,
+            notes TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (purchase_id) REFERENCES purchases(id),
+            FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE SET NULL,
+            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+        CREATE TABLE IF NOT EXISTS purchase_return_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            return_id INTEGER NOT NULL,
+            purchase_item_id INTEGER,
+            medicine_id INTEGER NOT NULL,
+            batch_id INTEGER,
+            quantity INTEGER NOT NULL DEFAULT 0,
+            unit_price REAL NOT NULL DEFAULT 0,
+            total REAL NOT NULL DEFAULT 0,
+            FOREIGN KEY (return_id) REFERENCES purchase_returns(id) ON DELETE CASCADE,
+            FOREIGN KEY (medicine_id) REFERENCES medicines(id),
+            FOREIGN KEY (batch_id) REFERENCES batches(id)
+        );
+        CREATE TABLE IF NOT EXISTS audit_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER,
+            action TEXT NOT NULL,
+            entity_type TEXT NOT NULL,
+            entity_id INTEGER,
+            details TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE SET NULL
+        );
+    ");
+
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_purchases_supplier ON purchases(supplier_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_purchases_due ON purchases(due_date)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_purchases_pay_status ON purchases(payment_status)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_purchase_payments_purchase ON purchase_payments(purchase_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_purchase_returns_purchase ON purchase_returns(purchase_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_suppliers_code ON suppliers(supplier_code)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_audit_entity ON audit_log(entity_type, entity_id)");
+
+    $pdo->exec("
+        UPDATE purchases
+        SET purchase_date = COALESCE(purchase_date, date(created_at)),
+            grand_total = CASE WHEN COALESCE(grand_total, 0) > 0 THEN grand_total ELSE COALESCE(total_amount, 0) END,
+            subtotal = CASE WHEN COALESCE(subtotal, 0) > 0 THEN subtotal ELSE COALESCE(total_amount, 0) END,
+            total_paid = CASE
+                WHEN COALESCE(payment_status, '') IN ('unpaid', 'partial', 'paid') AND COALESCE(total_paid, 0) > 0 THEN total_paid
+                WHEN COALESCE(grand_total, total_amount, 0) > 0 AND COALESCE(total_paid, 0) = 0 AND COALESCE(status, 'received') = 'received'
+                     AND COALESCE(payment_status, 'paid') IN ('paid', '') THEN COALESCE(grand_total, total_amount, 0)
+                ELSE COALESCE(total_paid, 0)
+            END
+        WHERE purchase_date IS NULL OR COALESCE(grand_total, 0) = 0
+    ");
+
+    $legacy = $pdo->query("SELECT id, reference, created_at FROM purchases WHERE purchase_number IS NULL OR TRIM(purchase_number) = ''")->fetchAll();
+    $updNum = $pdo->prepare("UPDATE purchases SET purchase_number = ? WHERE id = ?");
+    foreach ($legacy as $row) {
+        $year = date('Y', strtotime($row['created_at'] ?: 'now'));
+        $updNum->execute([sprintf('PUR-%s-%06d', $year, (int)$row['id']), (int)$row['id']]);
+    }
+
+    $backfillFlag = $pdo->query("SELECT value FROM settings WHERE key='purchase_ap_backfilled'")->fetchColumn();
+    if ($backfillFlag !== '1') {
+        $pdo->exec("
+            UPDATE purchases SET
+                grand_total = CASE WHEN COALESCE(grand_total,0) > 0 THEN grand_total ELSE COALESCE(total_amount,0) END,
+                subtotal = CASE WHEN COALESCE(subtotal,0) > 0 THEN subtotal ELSE COALESCE(total_amount,0) END,
+                purchase_date = COALESCE(purchase_date, date(created_at)),
+                status = COALESCE(NULLIF(status,''), 'received'),
+                total_paid = CASE WHEN COALESCE(total_paid,0) > 0 THEN total_paid ELSE COALESCE(NULLIF(grand_total,0), total_amount, 0) END,
+                total_due = 0,
+                payment_status = 'paid'
+            WHERE id NOT IN (SELECT purchase_id FROM purchase_payments)
+              AND COALESCE(total_paid, 0) = 0
+              AND COALESCE(status, 'received') IN ('received', '')
+        ");
+        $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('purchase_ap_backfilled', '1')")->execute();
+    }
+
+    $pdo->exec("
+        UPDATE purchase_items
+        SET line_total = CASE WHEN COALESCE(line_total, 0) > 0 THEN line_total ELSE quantity * purchase_price END
+        WHERE COALESCE(line_total, 0) = 0
+    ");
+
+    $orphans = $pdo->query("SELECT id FROM suppliers WHERE supplier_code IS NULL OR TRIM(supplier_code) = ''")->fetchAll(PDO::FETCH_COLUMN);
+    $updSup = $pdo->prepare("UPDATE suppliers SET supplier_code = ?, status = COALESCE(NULLIF(status, ''), 'active') WHERE id = ?");
+    foreach ($orphans as $sid) {
+        $updSup->execute([sprintf('SUP-%06d', (int)$sid), (int)$sid]);
+    }
+
+    $stmt = $pdo->prepare("INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)");
+    $stmt->execute(['purchase_require_approval', '0']);
+    try {
+        $pdo->exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_purchases_number ON purchases(purchase_number)");
+    } catch (PDOException $e) { /* duplicates until backfill */ }
 }
 
 function settingsCache(bool $reset = false): array {

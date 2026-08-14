@@ -21,8 +21,13 @@ function permissionCatalog(): array {
             'pos.access' => 'Access POS / New Sale',
         ],
         'Purchases' => [
-            'purchases.view'   => 'View Purchases',
-            'purchases.manage' => 'Record & Manage Purchases',
+            'purchases.view'    => 'View Purchases',
+            'purchases.manage'  => 'Record & Manage Purchases',
+            'purchases.approve' => 'Approve Purchases',
+        ],
+        'Suppliers' => [
+            'suppliers.view'   => 'View Suppliers',
+            'suppliers.manage' => 'Manage Suppliers',
         ],
         'Inventory' => [
             'inventory.view'   => 'View Inventory & Stock',
@@ -158,6 +163,37 @@ function seedPermissionsAndRoles(PDO $pdo): void {
     }
 
     migrateLegacyUserRoles($pdo, $adminRoleId, $staffRoleId);
+
+    if ($adminRoleId) {
+        grantMissingAllows($pdo, $adminRoleId, allPermissionKeys());
+    }
+    if ($managerRoleId) {
+        grantMissingAllows($pdo, $managerRoleId, [
+            'purchases.view', 'purchases.manage', 'purchases.approve',
+            'suppliers.view', 'suppliers.manage',
+        ]);
+    }
+    if ($pharmacistRoleId) {
+        grantMissingAllows($pdo, $pharmacistRoleId, [
+            'purchases.view', 'purchases.manage', 'suppliers.view',
+        ]);
+    }
+    if ($staffRoleId) {
+        grantMissingAllows($pdo, $staffRoleId, [
+            'purchases.view', 'purchases.manage', 'suppliers.view', 'suppliers.manage',
+        ]);
+    }
+}
+
+function grantMissingAllows(PDO $pdo, int $roleId, array $keys): void {
+    $chk = $pdo->prepare('SELECT effect FROM role_permissions WHERE role_id=? AND perm_key=?');
+    $ins = $pdo->prepare('INSERT INTO role_permissions (role_id, perm_key, effect) VALUES (?, ?, ?)');
+    foreach ($keys as $key) {
+        $chk->execute([$roleId, $key]);
+        if ($chk->fetchColumn() === false) {
+            $ins->execute([$roleId, $key, 'allow']);
+        }
+    }
 }
 
 function allowPermissions(array $keys): array {

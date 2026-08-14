@@ -14,6 +14,8 @@ $fields = [
     'pharmacy_address' => ['label' => 'Address',          'type' => 'textarea'],
     'currency'         => ['label' => 'Currency Code',    'type' => 'text', 'hint' => 'e.g. ETB, USD, EUR'],
     'tax_rate'         => ['label' => 'Tax Rate (%)',     'type' => 'number', 'hint' => 'Set to 0 for no tax'],
+    'pharmacy_tax'     => ['label' => 'Tax / TIN Number', 'type' => 'text', 'hint' => 'Shown on purchase invoices'],
+    'purchase_require_approval' => ['label' => 'Require purchase approval before receiving stock', 'type' => 'checkbox'],
     'receipt_footer'   => ['label' => 'Receipt Footer',  'type' => 'textarea'],
 ];
 
@@ -154,6 +156,11 @@ renderSidebar();
         <label><?= htmlspecialchars($def['label']) ?><?= isset($def['hint']) ? ' <span style="color:var(--text-300);font-weight:400;text-transform:none;font-size:11px;">(' . $def['hint'] . ')</span>' : '' ?></label>
         <?php if ($def['type'] === 'textarea'): ?>
           <textarea name="<?= $key ?>"><?= htmlspecialchars($settings[$key]) ?></textarea>
+        <?php elseif ($def['type'] === 'checkbox'): ?>
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;text-transform:none;">
+            <input type="checkbox" name="<?= $key ?>" value="1" <?= $settings[$key] === '1' ? 'checked' : '' ?> style="width:auto;">
+            Enable
+          </label>
         <?php else: ?>
           <input type="<?= $def['type'] ?>" name="<?= $key ?>" value="<?= htmlspecialchars($settings[$key]) ?>">
         <?php endif; ?>

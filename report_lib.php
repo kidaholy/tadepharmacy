@@ -711,5 +711,6 @@ function reportNavItems(): array {
         ['page' => 'report_inventory',  'label' => 'Inventory',          'icon' => 'boxes'],
         ['page' => 'report_profit',     'label' => 'Profit',             'icon' => 'trending-up'],
         ['page' => 'report_customers',  'label' => 'Customers',          'icon' => 'users'],
+        ['page' => 'report_purchases',  'label' => 'Purchases',          'icon' => 'package-open'],
     ];
 }

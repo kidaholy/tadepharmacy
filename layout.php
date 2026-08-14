@@ -6,6 +6,9 @@ $currentPage = basename($_SERVER['PHP_SELF'], '.php');
 if (str_starts_with($currentPage, 'report_')) {
     $currentPage = 'reports';
 }
+if ($currentPage === 'purchase_invoice') {
+    $currentPage = 'purchases';
+}
 
 $pagePermissions = pagePermissionMap();
 $requiredPerm = $pagePermissions[$currentPage] ?? null;
@@ -30,6 +33,7 @@ $navDefs = [
     ['page' => 'customers',     'icon' => 'users',             'label' => 'Customers',          'perm' => 'customers.view'],
     ['page' => 'pos',           'icon' => 'scan-barcode',      'label' => 'New Sale (POS)',     'perm' => 'pos.access'],
     ['page' => 'purchases',     'icon' => 'package-open',      'label' => 'Purchases',          'perm' => 'purchases.view'],
+    ['page' => 'suppliers',     'icon' => 'truck',              'label' => 'Suppliers',          'perm' => ['suppliers.view', 'purchases.view']],
     ['page' => 'inventory',     'icon' => 'boxes',             'label' => 'Inventory',          'perm' => 'inventory.view'],
     ['page' => 'reports',       'icon' => 'bar-chart-3',       'label' => 'Reports',              'perm' => 'reports.view'],
     ['page' => 'landing_cms',   'icon' => 'layout-template',   'label' => 'Landing Page',       'perm' => 'landing.edit'],

@@ -202,6 +202,38 @@ function notifyCreditOverdue(array $sale): void {
     sendNotification($msg);
 }
 
+function notifySupplierDue(array $p, string $when): void {
+    $due = purchaseOutstanding($p);
+    $msg = "<b>Supplier payment {$when}</b>\n"
+         . "Supplier: " . ($p['supplier_name'] ?? '') . "\n"
+         . "Purchase: {$p['purchase_number']}\n"
+         . "Amount: " . number_format($due, 2) . " ETB";
+    if ($when === 'overdue' && !empty($p['due_date'])) {
+        $days = max(1, (int)((strtotime(date('Y-m-d')) - strtotime($p['due_date'])) / 86400));
+        $msg .= "\nOverdue by {$days} day(s).";
+    }
+    sendNotification($msg);
+}
+
+function runDailyPayableAlerts(PDO $pdo): void {
+    require_once __DIR__ . '/purchases_lib.php';
+    $sql = "
+        SELECT p.*, s.name AS supplier_name
+        FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id
+        WHERE p.status='received'
+          AND (COALESCE(p.grand_total,p.total_amount) - COALESCE(p.total_paid,0) - COALESCE(p.total_returned,0)) > 0.009
+    ";
+    $tomorrow = $pdo->prepare($sql . " AND p.due_date = ?");
+    $tomorrow->execute([date('Y-m-d', strtotime('+1 day'))]);
+    foreach ($tomorrow as $p) notifySupplierDue($p, 'due tomorrow');
+
+    $today = $pdo->query($sql . " AND p.due_date = date('now')")->fetchAll();
+    foreach ($today as $p) notifySupplierDue($p, 'due today');
+
+    $overdue = $pdo->query($sql . " AND p.due_date < date('now') LIMIT 20")->fetchAll();
+    foreach ($overdue as $p) notifySupplierDue($p, 'overdue');
+}
+
 function notifyLowStock(string $medicineName, int $stock): void {
     sendNotification("<b>Low Stock</b>\n{$medicineName}: {$stock} units remaining");
 }
@@ -294,6 +326,13 @@ function buildDailyReportMessage(PDO $pdo, string $slot): string {
           . 'Expiring (30 days): ' . number_format($snap['expiringSoon']) . "\n"
           . 'Expired on shelf: ' . number_format($snap['expired']) . "\n";
 
+    require_once __DIR__ . '/purchases_lib.php';
+    $ap = payableDashboard($pdo);
+    $msg .= "\n<b>Accounts payable</b>\n"
+          . 'Outstanding: ' . tgEsc(currency($ap['total'])) . "\n"
+          . 'Overdue: ' . tgEsc(currency($ap['overdue'])) . "\n"
+          . 'Due today: ' . tgEsc(currency($ap['dueToday'])) . "\n";
+
     if (!empty($snap['topProducts'])) {
         $msg .= "\n<b>Top products today</b>\n";
         $i = 1;
@@ -351,6 +390,7 @@ function maybeSendDailyReports(PDO $pdo): void {
 function runScheduledNotifications(PDO $pdo): void {
     if (getSetting('last_credit_alert_date', '') !== date('Y-m-d')) {
         runDailyCreditAlerts($pdo);
+        runDailyPayableAlerts($pdo);
         $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_credit_alert_date', ?)")->execute([date('Y-m-d')]);
         clearSettingsCache();
     }
