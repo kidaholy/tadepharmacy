@@ -1,5 +1,31 @@
 <?php
 define('DB_PATH', __DIR__ . '/data/pharmacy.db');
+define('PHARMACY_LOGO_PATH', __DIR__ . '/public/tade pharmacy.jpeg');
+
+function pharmacyLogoUrl(): string {
+    return 'public/' . rawurlencode('tade pharmacy.jpeg');
+}
+
+function pharmacyLogoExists(): bool {
+    return is_file(PHARMACY_LOGO_PATH);
+}
+
+function renderPharmacyLogo(string $extraClass = ''): void {
+    $cls = 'logo-icon' . ($extraClass !== '' ? ' ' . htmlspecialchars($extraClass) : '');
+    $alt = htmlspecialchars(getSetting('pharmacy_name', 'TADE PHARMACY'));
+    if (pharmacyLogoExists()) {
+        echo '<div class="' . $cls . '"><img src="' . htmlspecialchars(pharmacyLogoUrl()) . '" alt="' . $alt . '" class="logo-img"></div>';
+        return;
+    }
+    echo '<div class="' . $cls . '"><i data-lucide="cross" style="width:20px;height:20px;"></i></div>';
+}
+
+function renderPharmacyFavicon(): void {
+    if (!pharmacyLogoExists()) {
+        return;
+    }
+    echo '<link rel="icon" type="image/jpeg" href="' . htmlspecialchars(pharmacyLogoUrl()) . '">' . "\n";
+}
 
 function getDB(): PDO {
     static $pdo = null;
@@ -40,6 +66,8 @@ function initDB(PDO $pdo): void {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT NOT NULL,
             generic_name TEXT,
+            strength TEXT,
+            dosage_form TEXT,
             category_id INTEGER,
             unit TEXT DEFAULT 'pcs',
             description TEXT,
@@ -116,7 +144,96 @@ function initDB(PDO $pdo): void {
             key TEXT PRIMARY KEY,
             value TEXT
         );
+
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            password_hash TEXT NOT NULL,
+            full_name TEXT NOT NULL,
+            role TEXT NOT NULL DEFAULT 'staff',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS operating_expenses (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            description TEXT,
+            amount REAL NOT NULL DEFAULT 0,
+            expense_date DATE NOT NULL,
+            created_by INTEGER,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS customers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            full_name TEXT NOT NULL,
+            phone TEXT NOT NULL UNIQUE,
+            outstanding_balance REAL NOT NULL DEFAULT 0,
+            total_credit REAL NOT NULL DEFAULT 0,
+            total_paid REAL NOT NULL DEFAULT 0,
+            overdue_amount REAL NOT NULL DEFAULT 0,
+            credit_limit REAL NOT NULL DEFAULT 0,
+            last_credit_sale DATETIME,
+            next_due_date DATE,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS payment_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER NOT NULL,
+            customer_id INTEGER,
+            amount REAL NOT NULL DEFAULT 0,
+            payment_method TEXT NOT NULL DEFAULT 'cash',
+            payment_date DATETIME DEFAULT CURRENT_TIMESTAMP,
+            reference_number TEXT,
+            received_by INTEGER,
+            notes TEXT,
+            FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
+            FOREIGN KEY (customer_id) REFERENCES customers(id) ON DELETE SET NULL,
+            FOREIGN KEY (received_by) REFERENCES users(id) ON DELETE SET NULL
+        );
     ");
+
+    foreach ([
+        'ALTER TABLE sales ADD COLUMN user_id INTEGER REFERENCES users(id)',
+        'ALTER TABLE sales ADD COLUMN sale_type TEXT DEFAULT \'cash\'',
+        'ALTER TABLE sales ADD COLUMN credit_due_date DATE',
+        'ALTER TABLE sales ADD COLUMN branch_id INTEGER',
+        'ALTER TABLE medicines ADD COLUMN barcode TEXT',
+        'ALTER TABLE medicines ADD COLUMN sku TEXT',
+        'ALTER TABLE sales ADD COLUMN customer_id INTEGER REFERENCES customers(id)',
+        'ALTER TABLE sales ADD COLUMN payment_status TEXT DEFAULT \'paid\'',
+        'ALTER TABLE sales ADD COLUMN due_date DATE',
+        'ALTER TABLE sales ADD COLUMN remaining_balance REAL DEFAULT 0',
+        'ALTER TABLE sales ADD COLUMN payment_reference TEXT',
+        'ALTER TABLE sales ADD COLUMN credit_notes TEXT',
+    ] as $migration) {
+        try { $pdo->exec($migration); } catch (PDOException $e) { /* already applied */ }
+    }
+
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS sale_returns (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            sale_id INTEGER,
+            medicine_id INTEGER NOT NULL,
+            batch_id INTEGER,
+            quantity INTEGER NOT NULL DEFAULT 0,
+            amount REAL NOT NULL DEFAULT 0,
+            reason TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE SET NULL,
+            FOREIGN KEY (medicine_id) REFERENCES medicines(id),
+            FOREIGN KEY (batch_id) REFERENCES batches(id)
+        )
+    ");
+
+    // Seed default admin (username: admin / password: admin123)
+    $userCount = (int) $pdo->query("SELECT COUNT(*) FROM users")->fetchColumn();
+    if ($userCount === 0) {
+        $pdo->prepare("INSERT INTO users (username, password_hash, full_name, role) VALUES (?, ?, ?, ?)")
+            ->execute(['admin', password_hash('admin123', PASSWORD_DEFAULT), 'Administrator', 'admin']);
+    }
 
     // Seed default settings
     $defaults = [
@@ -133,18 +250,57 @@ function initDB(PDO $pdo): void {
         $stmt->execute([$k, $v]);
     }
 
+    require_once __DIR__ . '/landing_lib.php';
+    seedLandingDefaults($pdo);
+
     // Seed categories
-    $cats = ['Antibiotics','Analgesics','Antifungals','Vitamins & Supplements','Antihypertensives','Antidiabetics','Antihistamines','Dermatology','Gastrointestinal','Other'];
+    $cats = [
+        'Antibiotics & Antimicrobials',
+        'Cardiovascular & Blood Health',
+        'Diabetes & Endocrine Care',
+        'Pain Relief & Anti-Inflammatories',
+        'Respiratory & Allergy',
+        'Gastrointestinal Health',
+        'Dermatology & Skin Care',
+        'Other',
+    ];
     $catStmt = $pdo->prepare("INSERT OR IGNORE INTO categories (name) VALUES (?)");
     foreach ($cats as $c) $catStmt->execute([$c]);
+
+    // Indexes for list/search performance
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_medicines_name ON medicines(name)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_medicines_category ON medicines(category_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_batches_medicine ON batches(medicine_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_batches_expiry ON batches(expiry_date)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_created ON sales(created_at)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_invoice ON sales(invoice_number)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_purchases_created ON purchases(created_at)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_purchase_items_purchase ON purchase_items(purchase_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_user ON sales(user_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_batches_supplier ON batches(supplier_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_expenses_date ON operating_expenses(expense_date)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_payment_history_sale ON payment_history(sale_id)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_payment_history_customer ON payment_history(customer_id)");
 }
 
 function getSetting(string $key, string $default = ''): string {
-    $pdo = getDB();
-    $stmt = $pdo->prepare("SELECT value FROM settings WHERE key = ?");
-    $stmt->execute([$key]);
-    $row = $stmt->fetch();
-    return $row ? $row['value'] : $default;
+    static $cache = null;
+    if ($cache === null) {
+        $cache = [];
+        foreach (getDB()->query('SELECT key, value FROM settings') as $row) {
+            $cache[$row['key']] = $row['value'];
+        }
+    }
+    return $cache[$key] ?? $default;
+}
+
+function clearSettingsCache(): void {
+    // Force reload on next getSetting by re-including is awkward with static —
+    // callers that write settings should redirect; cache is per-request anyway.
 }
 
 function generateInvoice(): string {
@@ -152,7 +308,35 @@ function generateInvoice(): string {
 }
 
 function currency(float $amount): string {
-    $cur = getSetting('currency', 'ETB');
+    static $cur = null;
+    if ($cur === null) $cur = getSetting('currency', 'ETB');
     return $cur . ' ' . number_format($amount, 2);
+}
+
+function flashSet(string $type, string $message): void {
+    if (session_status() === PHP_SESSION_NONE) session_start();
+    $_SESSION['flash'] = ['type' => $type, 'message' => $message];
+}
+
+function flashGet(): ?array {
+    if (session_status() === PHP_SESSION_NONE) session_start();
+    if (empty($_SESSION['flash'])) return null;
+    $flash = $_SESSION['flash'];
+    unset($_SESSION['flash']);
+    return $flash;
+}
+
+function renderPagination(int $page, int $totalPages, string $baseUrl): void {
+    if ($totalPages <= 1) return;
+    $sep = str_contains($baseUrl, '?') ? '&' : '?';
+    echo '<div class="pagination">';
+    if ($page > 1) {
+        echo '<a class="btn btn-ghost btn-sm" href="' . htmlspecialchars($baseUrl . $sep . 'page=' . ($page - 1)) . '">Prev</a>';
+    }
+    echo '<span class="pagination-info">Page ' . $page . ' of ' . $totalPages . '</span>';
+    if ($page < $totalPages) {
+        echo '<a class="btn btn-ghost btn-sm" href="' . htmlspecialchars($baseUrl . $sep . 'page=' . ($page + 1)) . '">Next</a>';
+    }
+    echo '</div>';
 }
 ?>

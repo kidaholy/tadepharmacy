@@ -6,6 +6,50 @@ $action = $_GET['action'] ?? 'list';
 $msg    = '';
 $error  = '';
 
+$CSV_HEADERS = ['Category', 'Dispensing Unit', 'Product Name', 'Generic / Active Ingredient'];
+
+// ── CSV Export (template or full list) ───────────────────────
+if ($action === 'export_template' || $action === 'export') {
+    $isTemplate = ($action === 'export_template');
+    $filename   = $isTemplate
+        ? 'medicine_list_template.csv'
+        : 'medicine_list_' . date('Y-m-d') . '.csv';
+
+    header('Content-Type: text/csv; charset=utf-8');
+    header('Content-Disposition: attachment; filename="' . $filename . '"');
+    header('Pragma: no-cache');
+    header('Expires: 0');
+
+    $out = fopen('php://output', 'w');
+    // UTF-8 BOM so Excel opens accents correctly
+    fwrite($out, "\xEF\xBB\xBF");
+    fputcsv($out, $CSV_HEADERS);
+
+    if ($isTemplate) {
+        // Example rows showing the expected format
+        fputcsv($out, ['Antibiotics & Antimicrobials', 'strip', 'Acetazolamide 250mg', 'Acetazolamide']);
+        fputcsv($out, ['', 'pk', 'Amoklavin 1gm', 'Amoxicillin + Clavulanic Acid']);
+        fputcsv($out, ['Cardiovascular & Blood Health', 'strip', 'Adipin 10mg', 'Amlodipine']);
+    } else {
+        $rows = $pdo->query("
+            SELECT c.name AS category, m.unit, m.name, m.generic_name
+            FROM medicines m
+            LEFT JOIN categories c ON c.id = m.category_id
+            ORDER BY c.name COLLATE NOCASE, m.name COLLATE NOCASE
+        ")->fetchAll();
+        $prevCat = null;
+        foreach ($rows as $r) {
+            $cat = $r['category'] ?? '';
+            // Match sheet style: repeat category only when it changes
+            $catOut = ($cat !== $prevCat) ? $cat : '';
+            $prevCat = $cat;
+            fputcsv($out, [$catOut, $r['unit'], $r['name'], $r['generic_name'] ?? '']);
+        }
+    }
+    fclose($out);
+    exit;
+}
+
 // ── Handle POST ─────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['act'] ?? '';
@@ -14,6 +58,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $id          = (int)($_POST['id'] ?? 0);
         $name        = trim($_POST['name'] ?? '');
         $generic     = trim($_POST['generic_name'] ?? '');
+        $strength    = trim($_POST['strength'] ?? '');
+        $dosage_form = trim($_POST['dosage_form'] ?? '');
         $category_id = (int)($_POST['category_id'] ?? 0) ?: null;
         $unit        = trim($_POST['unit'] ?? 'pcs');
         $description = trim($_POST['description'] ?? '');
@@ -22,56 +68,204 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         if (!$name) { $error = 'Medicine name is required.'; }
         else {
             if ($id) {
-                $pdo->prepare("UPDATE medicines SET name=?,generic_name=?,category_id=?,unit=?,description=?,reorder_level=? WHERE id=?")
-                    ->execute([$name,$generic,$category_id,$unit,$description,$reorder,$id]);
-                $msg = 'Medicine updated successfully.';
+                $pdo->prepare("UPDATE medicines SET name=?,generic_name=?,strength=?,dosage_form=?,category_id=?,unit=?,description=?,reorder_level=? WHERE id=?")
+                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder,$id]);
+                flashSet('success', 'Medicine updated successfully.');
             } else {
-                $pdo->prepare("INSERT INTO medicines (name,generic_name,category_id,unit,description,reorder_level) VALUES (?,?,?,?,?,?)")
-                    ->execute([$name,$generic,$category_id,$unit,$description,$reorder]);
-                $msg = 'Medicine added successfully.';
+                $pdo->prepare("INSERT INTO medicines (name,generic_name,strength,dosage_form,category_id,unit,description,reorder_level) VALUES (?,?,?,?,?,?,?,?)")
+                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder]);
+                flashSet('success', 'Medicine added successfully.');
             }
-            $action = 'list';
+            header('Location: medicines.php');
+            exit;
         }
     }
 
     if ($act === 'delete') {
         $id = (int)($_POST['id'] ?? 0);
-        $pdo->prepare("DELETE FROM medicines WHERE id=?")->execute([$id]);
-        $msg = 'Medicine deleted.';
+        try {
+            $pdo->prepare("DELETE FROM medicines WHERE id=?")->execute([$id]);
+            flashSet('success', 'Medicine deleted.');
+        } catch (PDOException $e) {
+            flashSet('error', 'Cannot delete medicine: It is linked to existing inventory batches, sales, or purchases.');
+        }
+        header('Location: medicines.php');
+        exit;
+    }
+
+    if ($act === 'import_csv') {
         $action = 'list';
+        if (empty($_FILES['csv_file']['tmp_name']) || !is_uploaded_file($_FILES['csv_file']['tmp_name'])) {
+            $error = 'Please choose a CSV file to import.';
+        } else {
+            $fh = fopen($_FILES['csv_file']['tmp_name'], 'r');
+            if (!$fh) {
+                $error = 'Could not read the uploaded file.';
+            } else {
+                // Strip UTF-8 BOM if present
+                $first = fgets($fh);
+                if ($first === false) {
+                    $error = 'CSV file is empty.';
+                    fclose($fh);
+                } else {
+                    if (strncmp($first, "\xEF\xBB\xBF", 3) === 0) {
+                        $first = substr($first, 3);
+                    }
+                    $header = str_getcsv($first);
+                    $header = array_map(fn($h) => strtolower(trim($h)), $header);
+
+                    $map = [
+                        'category'                       => 'category',
+                        'dispensing unit'                => 'unit',
+                        'despansing unit'                => 'unit',
+                        'product name'                   => 'name',
+                        'generic / active ingredient'    => 'generic',
+                        'generic'                        => 'generic',
+                        'generic name'                   => 'generic',
+                        'active ingredient'              => 'generic',
+                    ];
+                    $col = [];
+                    foreach ($header as $i => $h) {
+                        if (isset($map[$h])) $col[$map[$h]] = $i;
+                    }
+
+                    if (!isset($col['name']) || !isset($col['unit'])) {
+                        $error = 'Invalid CSV template. Required columns: Category, Dispensing Unit, Product Name, Generic / Active Ingredient';
+                        fclose($fh);
+                    } else {
+                        // Load existing categories
+                        $catIds = [];
+                        foreach ($pdo->query('SELECT id, name FROM categories') as $c) {
+                            $catIds[strtolower($c['name'])] = (int)$c['id'];
+                        }
+                        $insCat = $pdo->prepare('INSERT INTO categories (name) VALUES (?)');
+                        $insMed = $pdo->prepare(
+                            'INSERT INTO medicines (name, generic_name, category_id, unit, reorder_level) VALUES (?,?,?,?,10)'
+                        );
+                        $findMed = $pdo->prepare(
+                            'SELECT id FROM medicines WHERE LOWER(name)=LOWER(?) AND LOWER(COALESCE(unit,\'\'))=LOWER(?) LIMIT 1'
+                        );
+                        $updMed = $pdo->prepare('UPDATE medicines SET generic_name=?, category_id=? WHERE id=?');
+
+                        $added = 0;
+                        $skipped = 0;
+                        $updated = 0;
+                        $mode = $_POST['import_mode'] ?? 'add'; // add | replace_all
+                        $currentCat = '';
+
+                        $pdo->beginTransaction();
+                        try {
+                            if ($mode === 'replace_all') {
+                                $linked = (int)$pdo->query('SELECT COUNT(*) FROM batches')->fetchColumn()
+                                    + (int)$pdo->query('SELECT COUNT(*) FROM sale_items')->fetchColumn()
+                                    + (int)$pdo->query('SELECT COUNT(*) FROM purchase_items')->fetchColumn();
+                                if ($linked > 0) {
+                                    throw new RuntimeException('Cannot replace all medicines while inventory, sales, or purchases are linked. Use “Add new only” instead.');
+                                }
+                                $pdo->exec('DELETE FROM medicines');
+                            }
+
+                            while (($row = fgetcsv($fh)) !== false) {
+                                if ($row === [null] || $row === false) continue;
+                                if (count(array_filter($row, fn($v) => trim((string)$v) !== '')) === 0) continue;
+
+                                $cat     = isset($col['category']) ? trim((string)($row[$col['category']] ?? '')) : '';
+                                $unit    = trim((string)($row[$col['unit']] ?? ''));
+                                $name    = trim(preg_replace('/\s+/', ' ', (string)($row[$col['name']] ?? '')));
+                                $generic = isset($col['generic']) ? trim(preg_replace('/\s+/', ' ', (string)($row[$col['generic']] ?? ''))) : '';
+
+                                if ($cat !== '') $currentCat = $cat;
+                                if ($name === '' || $unit === '') { $skipped++; continue; }
+
+                                $categoryId = null;
+                                if ($currentCat !== '') {
+                                    $key = strtolower($currentCat);
+                                    if (!isset($catIds[$key])) {
+                                        $insCat->execute([$currentCat]);
+                                        $catIds[$key] = (int)$pdo->lastInsertId();
+                                    }
+                                    $categoryId = $catIds[$key];
+                                }
+
+                                $findMed->execute([$name, $unit]);
+                                $existingId = $findMed->fetchColumn();
+                                if ($existingId && $mode !== 'replace_all') {
+                                    $updMed->execute([$generic !== '' ? $generic : null, $categoryId, $existingId]);
+                                    $updated++;
+                                } else {
+                                    $insMed->execute([$name, $generic !== '' ? $generic : null, $categoryId, strtolower($unit)]);
+                                    $added++;
+                                }
+                            }
+
+                            $pdo->commit();
+                            $parts = [];
+                            if ($added)   $parts[] = "$added added";
+                            if ($updated) $parts[] = "$updated updated";
+                            if ($skipped) $parts[] = "$skipped skipped";
+                            flashSet('success', 'Import complete: ' . (implode(', ', $parts) ?: 'no rows imported') . '.');
+                            header('Location: medicines.php');
+                            exit;
+                        } catch (Throwable $e) {
+                            $pdo->rollBack();
+                            $error = 'Import failed: ' . $e->getMessage();
+                        }
+                        fclose($fh);
+                    }
+                }
+            }
+        }
     }
 }
 
 // ── Data ────────────────────────────────────────────────────
+$flash = flashGet();
+if ($flash) {
+    if ($flash['type'] === 'success') $msg = $flash['message'];
+    else $error = $flash['message'];
+}
+
 $categories = $pdo->query("SELECT * FROM categories ORDER BY name")->fetchAll();
 
 $edit = null;
 if ($action === 'edit' && isset($_GET['id'])) {
-    $edit = $pdo->prepare("SELECT * FROM medicines WHERE id=?")->execute([(int)$_GET['id']]) && ($edit = $pdo->prepare("SELECT * FROM medicines WHERE id=?")) && $edit->execute([(int)$_GET['id']]) ? $edit->fetch() : null;
-    // cleaner
     $stmt = $pdo->prepare("SELECT * FROM medicines WHERE id=?");
     $stmt->execute([(int)$_GET['id']]);
     $edit = $stmt->fetch();
 }
 
-// Search / list
-$search = trim($_GET['q'] ?? '');
+// Search / list with pagination
+$search    = trim($_GET['q'] ?? '');
 $catFilter = (int)($_GET['cat'] ?? 0);
+$page      = max(1, (int)($_GET['page'] ?? 1));
+$perPage   = 50;
 
-$sql = "SELECT m.*, c.name as cat_name, COALESCE(SUM(b.quantity),0) as stock
-        FROM medicines m
-        LEFT JOIN categories c ON c.id = m.category_id
-        LEFT JOIN batches b ON b.medicine_id = m.id";
-$params = [];
 $where  = [];
+$params = [];
 if ($search) { $where[] = "(m.name LIKE ? OR m.generic_name LIKE ?)"; $params[] = "%$search%"; $params[] = "%$search%"; }
 if ($catFilter) { $where[] = "m.category_id = ?"; $params[] = $catFilter; }
-if ($where) $sql .= ' WHERE ' . implode(' AND ', $where);
-$sql .= ' GROUP BY m.id ORDER BY m.name';
+$whereSql = $where ? (' WHERE ' . implode(' AND ', $where)) : '';
+
+$countStmt = $pdo->prepare("SELECT COUNT(*) FROM medicines m" . $whereSql);
+$countStmt->execute($params);
+$totalMeds = (int)$countStmt->fetchColumn();
+$totalPages = max(1, (int)ceil($totalMeds / $perPage));
+if ($page > $totalPages) $page = $totalPages;
+$offset = ($page - 1) * $perPage;
+
+$sql = "SELECT m.*, c.name as cat_name,
+        (SELECT COALESCE(SUM(b.quantity),0) FROM batches b WHERE b.medicine_id = m.id) as stock
+        FROM medicines m
+        LEFT JOIN categories c ON c.id = m.category_id
+        $whereSql
+        ORDER BY c.name COLLATE NOCASE, m.name COLLATE NOCASE
+        LIMIT $perPage OFFSET $offset";
 
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $medicines = $stmt->fetchAll();
+
+$pagerBase = 'medicines.php?' . http_build_query(array_filter(['q' => $search ?: null, 'cat' => $catFilter ?: null]));
 
 renderHead('Medicines');
 renderSidebar();
@@ -96,14 +290,6 @@ renderSidebar();
     <input type="hidden" name="id" value="<?= $edit['id'] ?? 0 ?>">
     <div class="form-row">
       <div class="form-group">
-        <label>Medicine Name *</label>
-        <input type="text" name="name" value="<?= htmlspecialchars($edit['name'] ?? '') ?>" required placeholder="e.g. Amoxicillin 500mg">
-      </div>
-      <div class="form-group">
-        <label>Generic Name</label>
-        <input type="text" name="generic_name" value="<?= htmlspecialchars($edit['generic_name'] ?? '') ?>" placeholder="e.g. Amoxicillin">
-      </div>
-      <div class="form-group">
         <label>Category</label>
         <select name="category_id">
           <option value="">— Select Category —</option>
@@ -113,12 +299,28 @@ renderSidebar();
         </select>
       </div>
       <div class="form-group">
-        <label>Unit</label>
+        <label>Dispensing Unit</label>
         <select name="unit">
-          <?php foreach (['pcs','tablet','capsule','strip','bottle','vial','sachet','tube','kg','g','ml','L'] as $u): ?>
-          <option value="<?= $u ?>" <?= (($edit['unit'] ?? 'pcs') === $u) ? 'selected' : '' ?>><?= $u ?></option>
+          <?php foreach (['strip','pk','bottle','sachet','ampoule','tube','suppository','effervescent','puff','pis','tin','vial','pcs','tablet','capsule','ml','L'] as $u): ?>
+          <option value="<?= $u ?>" <?= (($edit['unit'] ?? 'strip') === $u) ? 'selected' : '' ?>><?= $u ?></option>
           <?php endforeach; ?>
         </select>
+      </div>
+      <div class="form-group">
+        <label>Product Name *</label>
+        <input type="text" name="name" value="<?= htmlspecialchars($edit['name'] ?? '') ?>" required placeholder="e.g. Amoklavin 1gm">
+      </div>
+      <div class="form-group">
+        <label>Generic / Active Ingredient</label>
+        <input type="text" name="generic_name" value="<?= htmlspecialchars($edit['generic_name'] ?? '') ?>" placeholder="e.g. Amoxicillin + Clavulanic Acid">
+      </div>
+      <div class="form-group">
+        <label>Strength</label>
+        <input type="text" name="strength" value="<?= htmlspecialchars($edit['strength'] ?? '') ?>" placeholder="e.g. 500mg, 10mg/ml">
+      </div>
+      <div class="form-group">
+        <label>Dosage Form</label>
+        <input type="text" name="dosage_form" value="<?= htmlspecialchars($edit['dosage_form'] ?? '') ?>" placeholder="e.g. Tablet, Syrup, Injection">
       </div>
       <div class="form-group">
         <label>Reorder Level</label>
@@ -139,9 +341,38 @@ renderSidebar();
 <?php else: ?>
 <!-- ── LIST ─────────────────────────────────────────────── -->
 <div class="card">
-  <div class="card-header">
-    <span class="card-title">All Medicines (<?= count($medicines) ?>)</span>
-    <a href="medicines.php?action=add" class="btn btn-primary"><i data-lucide="plus"></i> Add Medicine</a>
+  <div class="card-header" style="flex-wrap:wrap;gap:10px;">
+    <span class="card-title">Medicines (<?= number_format($totalMeds) ?>)</span>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
+      <a href="medicines.php?action=export_template" class="btn btn-ghost btn-sm"><i data-lucide="file-down"></i> CSV Template</a>
+      <a href="medicines.php?action=export" class="btn btn-ghost btn-sm"><i data-lucide="download"></i> Export CSV</a>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="document.getElementById('importPanel').style.display = document.getElementById('importPanel').style.display === 'none' ? 'block' : 'none'">
+        <i data-lucide="upload"></i> Import CSV
+      </button>
+      <a href="medicines.php?action=add" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> Add Medicine</a>
+    </div>
+  </div>
+
+  <div id="importPanel" style="display:<?= ($error && ($_POST['act'] ?? '') === 'import_csv') ? 'block' : 'none' ?>;margin-bottom:16px;padding:16px;border:1px solid var(--border);border-radius:10px;background:var(--bg-soft, transparent);">
+    <form method="POST" enctype="multipart/form-data" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
+      <input type="hidden" name="act" value="import_csv">
+      <div class="form-group" style="margin:0;flex:1;min-width:220px;">
+        <label>CSV file (use the template format)</label>
+        <input type="file" name="csv_file" accept=".csv,text/csv" required>
+      </div>
+      <div class="form-group" style="margin:0;min-width:180px;">
+        <label>Import mode</label>
+        <select name="import_mode">
+          <option value="add">Add / update (keep existing)</option>
+          <option value="replace_all">Replace all (empty catalogue only)</option>
+        </select>
+      </div>
+      <button type="submit" class="btn btn-primary"><i data-lucide="upload"></i> Import</button>
+    </form>
+    <p style="margin:10px 0 0;color:var(--text-300);font-size:13px;">
+      Columns: <strong>Category</strong>, <strong>Dispensing Unit</strong>, <strong>Product Name</strong>, <strong>Generic / Active Ingredient</strong>.
+      Category may be left blank on following rows to reuse the last category.
+    </p>
   </div>
 
   <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
@@ -163,30 +394,41 @@ renderSidebar();
 
   <div class="table-wrap">
     <table>
-      <thead><tr><th>#</th><th>Name</th><th>Generic</th><th>Category</th><th>Unit</th><th>Stock</th><th>Reorder</th><th>Actions</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Dispensing Unit</th>
+          <th>Product Name</th>
+          <th>Generic / Active Ingredient</th>
+          <th>Stock</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
       <tbody>
       <?php if (empty($medicines)): ?>
-        <tr><td colspan="8" style="text-align:center;padding:40px;color:var(--text-300);">No medicines found</td></tr>
+        <tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-300);">No medicines found</td></tr>
       <?php else: ?>
-      <?php foreach ($medicines as $i => $m):
-        $stockClass = $m['stock'] == 0 ? 'badge-red' : ($m['stock'] <= $m['reorder_level'] ? 'badge-orange' : 'badge-green');
+      <?php
+        $prevCat = null;
+        foreach ($medicines as $m):
+          $stockClass = $m['stock'] == 0 ? 'badge-red' : ($m['stock'] <= $m['reorder_level'] ? 'badge-orange' : 'badge-green');
+          $showCat = ($m['cat_name'] !== $prevCat);
+          $prevCat = $m['cat_name'];
       ?>
         <tr>
-          <td style="color:var(--text-300);"><?= $i+1 ?></td>
-          <td style="font-weight:600;color:var(--text-100);"><?= htmlspecialchars($m['name']) ?></td>
-          <td style="color:var(--text-300);font-style:italic;"><?= htmlspecialchars($m['generic_name'] ?: '—') ?></td>
-          <td><span class="badge badge-gray"><?= htmlspecialchars($m['cat_name'] ?? 'Uncategorized') ?></span></td>
+          <td><?php if ($showCat): ?><span class="badge badge-gray"><?= htmlspecialchars($m['cat_name'] ?? 'Uncategorized') ?></span><?php endif; ?></td>
           <td><?= htmlspecialchars($m['unit']) ?></td>
+          <td style="font-weight:600;color:var(--text-100);"><?= htmlspecialchars($m['name']) ?></td>
+          <td style="color:var(--text-300);"><?= htmlspecialchars($m['generic_name'] ?: '—') ?></td>
           <td><span class="badge <?= $stockClass ?>"><?= number_format($m['stock']) ?></span></td>
-          <td style="color:var(--text-300);"><?= $m['reorder_level'] ?></td>
           <td>
-            <div style="display:flex;gap:6px;">
-              <a href="medicines.php?action=edit&id=<?= $m['id'] ?>" class="btn btn-ghost btn-sm"><i data-lucide="pencil"></i></a>
-              <a href="inventory.php?med=<?= $m['id'] ?>" class="btn btn-ghost btn-sm"><i data-lucide="package"></i></a>
+            <div class="row-actions">
+              <a href="medicines.php?action=edit&id=<?= $m['id'] ?>" class="btn btn-ghost btn-sm">Edit</a>
+              <a href="inventory.php?med=<?= $m['id'] ?>" class="btn btn-ghost btn-sm">Stock</a>
               <form method="POST" onsubmit="return confirmDelete(this)">
                 <input type="hidden" name="act" value="delete">
                 <input type="hidden" name="id" value="<?= $m['id'] ?>">
-                <button type="submit" class="btn btn-danger btn-sm"><i data-lucide="trash-2"></i></button>
+                <button type="submit" class="btn btn-danger btn-sm">Del</button>
               </form>
             </div>
           </td>
@@ -196,6 +438,7 @@ renderSidebar();
       </tbody>
     </table>
   </div>
+  <?php renderPagination($page, $totalPages, $pagerBase); ?>
 </div>
 <?php endif; ?>
 

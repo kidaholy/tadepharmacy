@@ -1,7 +1,15 @@
 <?php
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/sales_lib.php';
+require_once __DIR__ . '/notifications_lib.php';
 
 $pdo = getDB();
+
+// Run daily credit alerts once per day
+if (getSetting('last_credit_alert_date', '') !== date('Y-m-d')) {
+    runDailyCreditAlerts($pdo);
+    $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_credit_alert_date', ?)")->execute([date('Y-m-d')]);
+}
 
 // KPIs
 $todayRevenue = $pdo->query("SELECT COALESCE(SUM(total_amount - discount), 0) FROM sales WHERE date(created_at) = date('now')")->fetchColumn();
@@ -12,6 +20,28 @@ $lowStock     = $pdo->query("SELECT COUNT(DISTINCT m.id) FROM medicines m JOIN b
 $expiringSoon = $pdo->query("SELECT COUNT(*) FROM batches WHERE expiry_date BETWEEN date('now') AND date('now', '+30 days') AND quantity > 0")->fetchColumn();
 $expired      = $pdo->query("SELECT COUNT(*) FROM batches WHERE expiry_date < date('now') AND quantity > 0")->fetchColumn();
 $totalStock   = $pdo->query("SELECT COALESCE(SUM(quantity), 0) FROM batches")->fetchColumn();
+
+$outstandingCredit = (float)$pdo->query("
+    SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
+    WHERE remaining_balance > 0.009 AND (payment_method = 'credit' OR sale_type = 'credit')
+")->fetchColumn();
+$overdueCredit = (float)$pdo->query("
+    SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
+    WHERE remaining_balance > 0.009 AND (payment_method = 'credit' OR sale_type = 'credit')
+      AND COALESCE(due_date, credit_due_date) < date('now')
+")->fetchColumn();
+$creditCollectedToday = (float)$pdo->query("
+    SELECT COALESCE(SUM(ph.amount), 0) FROM payment_history ph
+    JOIN sales s ON s.id = ph.sale_id
+    WHERE date(ph.payment_date) = date('now')
+      AND (s.payment_method = 'credit' OR s.sale_type = 'credit')
+")->fetchColumn();
+
+$todayPayments = $pdo->query("
+    SELECT payment_method, COUNT(*) AS cnt, COALESCE(SUM(total_amount - discount), 0) AS rev
+    FROM sales WHERE date(created_at) = date('now')
+    GROUP BY payment_method ORDER BY rev DESC
+")->fetchAll();
 
 // Recent sales
 $recentSales = $pdo->query("SELECT s.*, COUNT(si.id) as items FROM sales s LEFT JOIN sale_items si ON si.sale_id = s.id GROUP BY s.id ORDER BY s.created_at DESC LIMIT 8")->fetchAll();
@@ -104,6 +134,50 @@ renderSidebar();
     </div>
   </div>
 </div>
+
+<div class="stats-grid mb-20">
+  <div class="stat-card orange">
+    <div class="stat-icon orange"><i data-lucide="credit-card"></i></div>
+    <div>
+      <div class="stat-label">Outstanding Credit</div>
+      <div class="stat-value"><?= number_format($outstandingCredit, 0) ?></div>
+      <div class="stat-sub"><a href="report_credit.php" style="color:inherit;">View credit reports →</a></div>
+    </div>
+  </div>
+  <div class="stat-card red">
+    <div class="stat-icon red"><i data-lucide="alert-circle"></i></div>
+    <div>
+      <div class="stat-label">Overdue Credit</div>
+      <div class="stat-value"><?= number_format($overdueCredit, 0) ?></div>
+      <div class="stat-sub"><?= getSetting('currency','ETB') ?></div>
+    </div>
+  </div>
+  <div class="stat-card green">
+    <div class="stat-icon green"><i data-lucide="check-circle"></i></div>
+    <div>
+      <div class="stat-label">Credit Collected Today</div>
+      <div class="stat-value"><?= number_format($creditCollectedToday, 0) ?></div>
+      <div class="stat-sub"><?= getSetting('currency','ETB') ?></div>
+    </div>
+  </div>
+</div>
+
+<?php if (!empty($todayPayments)): ?>
+<div class="card mb-20">
+  <div class="card-header"><span class="card-title">Today's Sales by Payment Method</span></div>
+  <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:14px;padding:4px 0;">
+    <?php foreach ($todayPayments as $p):
+      $lbl = posPaymentMethods()[$p['payment_method']] ?? ucfirst($p['payment_method']);
+    ?>
+    <div style="background:var(--bg-600);border:1px solid var(--border);border-radius:var(--radius-sm);padding:14px;">
+      <div style="font-size:12px;color:var(--text-300);margin-bottom:4px;"><?= htmlspecialchars($lbl) ?></div>
+      <div style="font-size:20px;font-weight:700;color:var(--accent2);"><?= number_format($p['rev'], 0) ?></div>
+      <div style="font-size:11px;color:var(--text-300);margin-top:4px;"><?= (int)$p['cnt'] ?> transaction(s)</div>
+    </div>
+    <?php endforeach; ?>
+  </div>
+</div>
+<?php endif; ?>
 
 <!-- Main Grid -->
 <div class="grid-2 mb-20">
@@ -199,7 +273,6 @@ renderSidebar();
     <a href="pos.php"       class="btn btn-primary"><i data-lucide="scan-barcode"></i> New Sale</a>
     <a href="medicines.php?action=add" class="btn btn-ghost"><i data-lucide="plus"></i> Add Medicine</a>
     <a href="purchases.php?action=add" class="btn btn-ghost"><i data-lucide="package-open"></i> Record Purchase</a>
-    <a href="suppliers.php?action=add" class="btn btn-ghost"><i data-lucide="truck"></i> Add Supplier</a>
     <a href="reports.php"   class="btn btn-ghost"><i data-lucide="bar-chart-3"></i> View Reports</a>
   </div>
 </div>

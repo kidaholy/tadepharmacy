@@ -9,27 +9,65 @@ $search = trim($_GET['q'] ?? '');
 $filter = $_GET['filter'] ?? 'all';
 $medId  = (int)($_GET['med'] ?? 0);
 
-// Batch quick-edit
+// Batch edit
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['act'] ?? '';
-    if ($act === 'update_price') {
-        $bid   = (int)$_POST['batch_id'];
-        $price = (float)$_POST['selling_price'];
-        $pdo->prepare("UPDATE batches SET selling_price=? WHERE id=?")->execute([$price,$bid]);
-        $msg = 'Selling price updated.';
+    if ($act === 'update_batch') {
+        $bid            = (int)$_POST['batch_id'];
+        $medicineId     = (int)$_POST['medicine_id'];
+        $batchNumber    = trim($_POST['batch_number'] ?? '');
+        $quantity       = (int)$_POST['quantity'];
+        $purchasePrice  = (float)$_POST['purchase_price'];
+        $sellingPrice   = (float)$_POST['selling_price'];
+        $expiryDate     = trim($_POST['expiry_date'] ?? '');
+        $manufactureDate = trim($_POST['manufacture_date'] ?? '') ?: null;
+
+        if (!$medicineId || !$batchNumber || !$expiryDate) {
+            $error = 'Medicine, batch number, and expiry date are required.';
+        } elseif ($quantity < 0 || $purchasePrice < 0 || $sellingPrice < 0) {
+            $error = 'Quantity and prices cannot be negative.';
+        } else {
+            $soldStmt = $pdo->prepare("SELECT COALESCE(SUM(quantity), 0) FROM sale_items WHERE batch_id=?");
+            $soldStmt->execute([$bid]);
+            $soldQty = (int)$soldStmt->fetchColumn();
+
+            if ($quantity < $soldQty) {
+                $error = "Quantity cannot be less than already sold ($soldQty units).";
+            } else {
+                $dup = $pdo->prepare("SELECT id FROM batches WHERE medicine_id=? AND batch_number=? AND id!=?");
+                $dup->execute([$medicineId, $batchNumber, $bid]);
+                if ($dup->fetch()) {
+                    $error = 'Another batch with this number already exists for this medicine.';
+                } else {
+                    $pdo->prepare("
+                        UPDATE batches
+                        SET medicine_id=?, batch_number=?, quantity=?, purchase_price=?,
+                            selling_price=?, expiry_date=?, manufacture_date=?
+                        WHERE id=?
+                    ")->execute([
+                        $medicineId, $batchNumber, $quantity, $purchasePrice,
+                        $sellingPrice, $expiryDate, $manufactureDate, $bid
+                    ]);
+                    $msg = 'Batch updated successfully.';
+                }
+            }
+        }
     }
     if ($act === 'delete_batch') {
-        $pdo->prepare("DELETE FROM batches WHERE id=?")->execute([(int)$_POST['batch_id']]);
-        $msg = 'Batch removed.';
+        try {
+            $pdo->prepare("DELETE FROM batches WHERE id=?")->execute([(int)$_POST['batch_id']]);
+            $msg = 'Batch removed.';
+        } catch (PDOException $e) {
+            $error = 'Cannot delete batch: It is linked to existing sales records.';
+        }
     }
 }
 
 $sql = "
-    SELECT b.*, m.name as med_name, m.reorder_level, m.unit, c.name as cat_name, s.name as supplier_name
+    SELECT b.*, m.name as med_name, m.reorder_level, m.unit, c.name as cat_name
     FROM batches b
     JOIN medicines m ON m.id = b.medicine_id
     LEFT JOIN categories c ON c.id = m.category_id
-    LEFT JOIN suppliers s ON s.id = b.supplier_id
 ";
 
 $params = [];
@@ -53,6 +91,9 @@ $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $batches = $stmt->fetchAll();
 
+$medicines = $pdo->query("SELECT id, name, unit FROM medicines ORDER BY name")->fetchAll();
+$currency  = getSetting('currency', 'ETB');
+
 // Summary counts
 $counts = [
     'all'      => $pdo->query("SELECT COUNT(*) FROM batches")->fetchColumn(),
@@ -71,6 +112,7 @@ renderSidebar();
 <div class="page-body">
 
 <?php if ($msg): ?><div class="alert alert-success auto-hide"><i data-lucide="check-circle"></i><?= htmlspecialchars($msg) ?></div><?php endif; ?>
+<?php if (isset($error) && $error): ?><div class="alert alert-danger"><i data-lucide="x-circle"></i><?= htmlspecialchars($error) ?></div><?php endif; ?>
 
 <!-- Filter tabs -->
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
@@ -109,12 +151,12 @@ renderSidebar();
         <tr>
           <th>Medicine</th><th>Category</th><th>Batch #</th>
           <th>Qty</th><th>Buy Price</th><th>Sell Price</th>
-          <th>Expiry</th><th>Status</th><th>Supplier</th><th>Actions</th>
+          <th>Expiry</th><th>Status</th><th>Actions</th>
         </tr>
       </thead>
       <tbody>
       <?php if (empty($batches)): ?>
-        <tr><td colspan="10" style="text-align:center;padding:40px;color:var(--text-300);">No batches match your filter</td></tr>
+        <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-300);">No batches match your filter</td></tr>
       <?php else: ?>
       <?php foreach ($batches as $b):
         $days = (strtotime($b['expiry_date']) - time()) / 86400;
@@ -135,14 +177,24 @@ renderSidebar();
         <td style="color:var(--accent2);font-weight:700;"><?= currency($b['selling_price']) ?></td>
         <td style="font-size:12px;"><?= date('M d, Y', strtotime($b['expiry_date'])) ?></td>
         <td><span class="badge <?= $statusClass ?>"><?= $statusLabel ?></span></td>
-        <td style="font-size:12px;color:var(--text-300);"><?= htmlspecialchars($b['supplier_name'] ?? '—') ?></td>
         <td>
-          <div style="display:flex;gap:6px;">
-            <button class="btn btn-ghost btn-sm" onclick="openEditModal(<?= $b['id'] ?>, <?= $b['selling_price'] ?>)"><i data-lucide="pencil"></i></button>
+          <div class="row-actions">
+            <button type="button" class="btn btn-ghost btn-sm"
+              onclick='openEditModal(<?= htmlspecialchars(json_encode([
+                'id'              => (int)$b['id'],
+                'medicine_id'     => (int)$b['medicine_id'],
+                'med_name'        => $b['med_name'],
+                'batch_number'    => $b['batch_number'],
+                'quantity'        => (int)$b['quantity'],
+                'purchase_price'  => (float)$b['purchase_price'],
+                'selling_price'   => (float)$b['selling_price'],
+                'expiry_date'     => $b['expiry_date'],
+                'manufacture_date'=> $b['manufacture_date'] ?? '',
+              ]), ENT_QUOTES) ?>)'>Edit</button>
             <form method="POST" onsubmit="return confirmDelete(this)">
               <input type="hidden" name="act" value="delete_batch">
               <input type="hidden" name="batch_id" value="<?= $b['id'] ?>">
-              <button type="submit" class="btn btn-danger btn-sm"><i data-lucide="trash-2"></i></button>
+              <button type="submit" class="btn btn-danger btn-sm">Del</button>
             </form>
           </div>
         </td>
@@ -154,23 +206,55 @@ renderSidebar();
   </div>
 </div>
 
-<!-- Edit Price Modal -->
+<!-- Edit Batch Modal -->
 <div class="modal-overlay" id="editModal">
-  <div class="modal" style="max-width:380px;">
+  <div class="modal" style="max-width:480px;">
     <div class="modal-header">
-      <h2>Update Selling Price</h2>
+      <h2>Edit Batch</h2>
       <button class="modal-close" onclick="closeModal('editModal')"><i data-lucide="x"></i></button>
     </div>
     <div class="modal-body">
       <form method="POST">
-        <input type="hidden" name="act" value="update_price">
+        <input type="hidden" name="act" value="update_batch">
         <input type="hidden" name="batch_id" id="editBatchId">
         <div class="form-group">
-          <label>New Selling Price (<?= getSetting('currency','ETB') ?>)</label>
-          <input type="number" name="selling_price" id="editPrice" step="0.01" min="0" required>
+          <label>Medicine</label>
+          <select name="medicine_id" id="editMedicineId" required>
+            <?php foreach ($medicines as $m): ?>
+            <option value="<?= $m['id'] ?>"><?= htmlspecialchars($m['name']) ?> (<?= htmlspecialchars($m['unit']) ?>)</option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Batch Number</label>
+          <input type="text" name="batch_number" id="editBatchNumber" required placeholder="e.g. BN-2024-001">
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Quantity</label>
+            <input type="number" name="quantity" id="editQuantity" min="0" step="1" required>
+          </div>
+          <div class="form-group">
+            <label>Expiry Date</label>
+            <input type="date" name="expiry_date" id="editExpiryDate" required>
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Buy Price (<?= htmlspecialchars($currency) ?>)</label>
+            <input type="number" name="purchase_price" id="editPurchasePrice" step="0.01" min="0" required>
+          </div>
+          <div class="form-group">
+            <label>Sell Price (<?= htmlspecialchars($currency) ?>)</label>
+            <input type="number" name="selling_price" id="editSellingPrice" step="0.01" min="0" required>
+          </div>
+        </div>
+        <div class="form-group">
+          <label>Manufacture Date <span style="color:var(--text-300);font-weight:400;">(optional)</span></label>
+          <input type="date" name="manufacture_date" id="editManufactureDate">
         </div>
         <div class="form-actions" style="padding-top:12px;margin-top:12px;">
-          <button type="submit" class="btn btn-primary">Save</button>
+          <button type="submit" class="btn btn-primary">Save Changes</button>
           <button type="button" class="btn btn-ghost" onclick="closeModal('editModal')">Cancel</button>
         </div>
       </form>
@@ -181,9 +265,15 @@ renderSidebar();
 </div></div>
 
 <script>
-function openEditModal(batchId, price) {
-  document.getElementById('editBatchId').value = batchId;
-  document.getElementById('editPrice').value   = price;
+function openEditModal(batch) {
+  document.getElementById('editBatchId').value         = batch.id;
+  document.getElementById('editMedicineId').value      = batch.medicine_id;
+  document.getElementById('editBatchNumber').value     = batch.batch_number;
+  document.getElementById('editQuantity').value        = batch.quantity;
+  document.getElementById('editPurchasePrice').value   = batch.purchase_price;
+  document.getElementById('editSellingPrice').value    = batch.selling_price;
+  document.getElementById('editExpiryDate').value      = batch.expiry_date;
+  document.getElementById('editManufactureDate').value = batch.manufacture_date || '';
   openModal('editModal');
 }
 </script>

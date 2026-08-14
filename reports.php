@@ -1,155 +1,240 @@
 <?php
 require_once __DIR__ . '/layout.php';
+require_once __DIR__ . '/report_ui.php';
 
-$pdo  = getDB();
-$type = $_GET['type'] ?? 'daily';
-$from = $_GET['from'] ?? date('Y-m-01');
-$to   = $_GET['to']   ?? date('Y-m-d');
+$pdo = getDB();
+extract(reportInit());
+$cur = getSetting('currency', 'ETB');
 
-// Revenue summary
-$revenue = $pdo->prepare("SELECT COALESCE(SUM(total_amount-discount),0) FROM sales WHERE date(created_at) BETWEEN ? AND ?")->execute([$from,$to]) ? ($q=$pdo->prepare("SELECT COALESCE(SUM(total_amount-discount),0) FROM sales WHERE date(created_at) BETWEEN ? AND ?")) && $q->execute([$from,$to]) ? $q->fetchColumn() : 0 : 0;
-$q = $pdo->prepare("SELECT COALESCE(SUM(total_amount-discount),0) FROM sales WHERE date(created_at) BETWEEN ? AND ?");
-$q->execute([$from,$to]);
-$revenue = (float)$q->fetchColumn();
+$kpis     = reportOverviewKpis($pdo, $dates, $filters);
+$insights = reportInsights($pdo, $dates, $filters);
+$daily    = reportDailyRevenue($pdo, $dates, $filters);
+$payData  = reportPaymentBreakdown($pdo, $dates, $filters);
+$catData  = reportCategoryPerformance($pdo, $dates, $filters);
+$topMeds  = reportTopProducts($pdo, $dates, $filters, 'qty', 15);
 
-$q2 = $pdo->prepare("SELECT COUNT(*) FROM sales WHERE date(created_at) BETWEEN ? AND ?");
-$q2->execute([$from,$to]);
-$saleCount = (int)$q2->fetchColumn();
+$revenue      = $kpis['revenue']['current'];
+$grossProfit  = $kpis['gross_profit']['current'];
+$cogs         = $kpis['cogs']['current'];
+$saleCount    = (int)$kpis['total_orders']['current'];
+$marginPct    = $revenue > 0 ? ($grossProfit / $revenue) * 100 : 0;
+$avgSale      = $kpis['avg_order_value']['current'];
+$purchaseTotal= $kpis['purchase_cost']['current'];
+$stockCost    = $kpis['inventory_value']['current'];
+$stockRetail  = $kpis['inventory_retail'];
 
-// Cost (purchases in period)
-$q3 = $pdo->prepare("SELECT COALESCE(SUM(total_amount),0) FROM purchases WHERE date(created_at) BETWEEN ? AND ?");
-$q3->execute([$from,$to]);
-$cost = (float)$q3->fetchColumn();
-$profit = $revenue - $cost;
+$from = $dates['from'];
+$to   = $dates['to'];
 
-// Daily breakdown
-$daily = $pdo->prepare("SELECT date(created_at) as day, COALESCE(SUM(total_amount-discount),0) as rev, COUNT(*) as txn FROM sales WHERE date(created_at) BETWEEN ? AND ? GROUP BY day ORDER BY day");
-$daily->execute([$from,$to]);
-$dailyRows = $daily->fetchAll();
-
-// Top selling medicines
-$topMeds = $pdo->prepare("
-    SELECT m.name, SUM(si.quantity) as qty_sold, SUM(si.subtotal) as revenue
-    FROM sale_items si
-    JOIN medicines m ON m.id = si.medicine_id
-    JOIN sales s ON s.id = si.sale_id
-    WHERE date(s.created_at) BETWEEN ? AND ?
-    GROUP BY m.id ORDER BY qty_sold DESC LIMIT 10
+$dailyRows = $pdo->prepare("
+    SELECT d.day, d.txn, d.rev, d.disc, COALESCE(u.units, 0) AS units
+    FROM (
+      SELECT date(created_at) AS day, COUNT(*) AS txn,
+             COALESCE(SUM(total_amount - discount), 0) AS rev,
+             COALESCE(SUM(discount), 0) AS disc
+      FROM sales WHERE date(created_at) BETWEEN ? AND ?
+      GROUP BY day
+    ) d
+    LEFT JOIN (
+      SELECT date(s.created_at) AS day, SUM(si.quantity) AS units
+      FROM sale_items si JOIN sales s ON s.id = si.sale_id
+      WHERE date(s.created_at) BETWEEN ? AND ?
+      GROUP BY day
+    ) u ON u.day = d.day
+    ORDER BY d.day DESC
 ");
-$topMeds->execute([$from,$to]);
-$topMedsData = $topMeds->fetchAll();
+$dailyRows->execute([$from, $to, $from, $to]);
+$dailyRows = $dailyRows->fetchAll();
 
-// Payment method breakdown
-$payBreak = $pdo->prepare("SELECT payment_method, COUNT(*) as cnt, SUM(total_amount-discount) as rev FROM sales WHERE date(created_at) BETWEEN ? AND ? GROUP BY payment_method");
-$payBreak->execute([$from,$to]);
-$payData = $payBreak->fetchAll();
+$expiryBatches = $pdo->query("
+    SELECT b.batch_number, b.expiry_date, b.quantity, b.purchase_price,
+           m.name, (b.quantity * b.purchase_price) AS value
+    FROM batches b JOIN medicines m ON m.id = b.medicine_id
+    WHERE b.expiry_date <= date('now', '+60 days') AND b.quantity > 0
+    ORDER BY b.expiry_date ASC LIMIT 20
+")->fetchAll();
 
-renderHead('Reports');
+$lowMeds = $pdo->query("
+    SELECT m.name, m.reorder_level, COALESCE(SUM(b.quantity), 0) AS stock
+    FROM medicines m LEFT JOIN batches b ON b.medicine_id = m.id
+    GROUP BY m.id HAVING stock <= m.reorder_level
+    ORDER BY stock ASC, m.name ASC LIMIT 15
+")->fetchAll();
+
+$slowMovers = $pdo->prepare("
+    SELECT m.name, COALESCE(SUM(b.quantity), 0) AS stock,
+           COALESCE(SUM(b.quantity * b.purchase_price), 0) AS cost_value
+    FROM medicines m JOIN batches b ON b.medicine_id = m.id AND b.quantity > 0
+    WHERE m.id NOT IN (
+      SELECT DISTINCT si.medicine_id FROM sale_items si JOIN sales s ON s.id = si.sale_id
+      WHERE date(s.created_at) BETWEEN ? AND ?
+    ) GROUP BY m.id ORDER BY cost_value DESC LIMIT 10
+");
+$slowMovers->execute([$from, $to]);
+$slowData = $slowMovers->fetchAll();
+
+$topCust = $pdo->prepare("
+    SELECT customer_name, COUNT(*) AS visits, SUM(total_amount - discount) AS spent
+    FROM sales WHERE date(created_at) BETWEEN ? AND ?
+      AND customer_name IS NOT NULL AND TRIM(customer_name) != ''
+    GROUP BY customer_name ORDER BY spent DESC LIMIT 10
+");
+$topCust->execute([$from, $to]);
+$custData = $topCust->fetchAll();
+
+$supPurch = $pdo->prepare("
+    SELECT COALESCE(s.name, 'Unknown') AS supplier, COUNT(p.id) AS orders,
+           COALESCE(SUM(p.total_amount), 0) AS total
+    FROM purchases p LEFT JOIN suppliers s ON s.id = p.supplier_id
+    WHERE date(p.created_at) BETWEEN ? AND ?
+    GROUP BY p.supplier_id ORDER BY total DESC
+");
+$supPurch->execute([$from, $to]);
+$supData = $supPurch->fetchAll();
+
+$chartDailyLabels = array_map(fn($r) => date('M j', strtotime($r['day'])), $daily);
+$chartDailyRevenue = array_map(fn($r) => (float)$r['revenue'], $daily);
+$chartCatLabels = array_column($catData, 'category');
+$chartCatRevenue = array_map(fn($r) => (float)$r['revenue'], $catData);
+$chartPayLabels = array_map(fn($r) => reportPaymentMethods()[$r['payment_method']] ?? ucfirst($r['payment_method']), $payData);
+$chartPayAmounts = array_map(fn($r) => (float)$r['amount'], $payData);
+
+renderHead('Reports', 'report-page');
+renderReportExtras();
 renderSidebar();
 ?>
 <div id="sidebarOverlay" class="overlay-bg" onclick="toggleSidebar()"></div>
 <div class="main-content">
-<?php renderTopbar('Reports', 'Financial & inventory analytics'); ?>
+<?php renderTopbar('Reports', 'Business intelligence overview'); ?>
 <div class="page-body">
 
-<!-- Filters -->
-<div class="card mb-20">
-  <form method="GET" style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-end;">
-    <div class="form-group" style="margin:0;min-width:140px;">
-      <label>From Date</label>
-      <input type="date" name="from" value="<?= $from ?>">
-    </div>
-    <div class="form-group" style="margin:0;min-width:140px;">
-      <label>To Date</label>
-      <input type="date" name="to" value="<?= $to ?>">
-    </div>
-    <button type="submit" class="btn btn-primary">Generate Report</button>
-    <a href="reports.php?from=<?= date('Y-m-01') ?>&to=<?= date('Y-m-d') ?>" class="btn btn-ghost">This Month</a>
-    <a href="reports.php?from=<?= date('Y-m-d') ?>&to=<?= date('Y-m-d') ?>" class="btn btn-ghost">Today</a>
-    <a href="reports.php?from=<?= date('Y-01-01') ?>&to=<?= date('Y-12-31') ?>" class="btn btn-ghost">This Year</a>
-  </form>
+<?php renderReportNav('reports'); ?>
+<?php renderReportFilters($dates, $filters, $options); ?>
+<?php renderReportMeta('Overview Dashboard', $dates); ?>
+<?php renderInsightsCard($insights); ?>
+
+<!-- Primary KPIs -->
+<div class="stats-grid kpi-grid">
+  <?php
+  renderKpiCard('Total Revenue', $kpis['revenue'], 'blue');
+  renderKpiCard('Gross Profit', $kpis['gross_profit'], 'green');
+  renderKpiCard('Net Profit', $kpis['net_profit'], 'green');
+  renderKpiCard('Profit Margin', $kpis['profit_margin'], 'blue', '', true);
+  renderKpiCard('Inventory Value', $kpis['inventory_value'], 'orange');
+  renderKpiCard('Total Orders', $kpis['total_orders'], 'blue');
+  renderKpiCard('Customers Served', $kpis['customers_served'], 'blue');
+  renderKpiCard('Avg Order Value', $kpis['avg_order_value'], 'green');
+  ?>
 </div>
 
-<!-- KPIs -->
-<div class="stats-grid">
-  <div class="stat-card blue">
-    <div class="stat-icon blue"><i data-lucide="trending-up"></i></div>
-    <div>
-      <div class="stat-label">Total Revenue</div>
-      <div class="stat-value"><?= number_format($revenue, 0) ?></div>
-      <div class="stat-sub"><?= getSetting('currency','ETB') ?> · <?= $saleCount ?> sales</div>
-    </div>
+<!-- Secondary KPIs -->
+<div class="stats-grid kpi-grid">
+  <?php
+  renderKpiCard('Outstanding Credit', $kpis['outstanding_credit'], 'orange');
+  renderKpiCard('Credit Collected', $kpis['credit_collected'], 'green');
+  renderKpiCard('Credit Collected Today', $kpis['credit_collected_today'], 'green');
+  renderKpiCard('Overdue Credit', $kpis['overdue_credit'], 'red');
+  renderKpiCard('Purchase Cost', $kpis['purchase_cost'], 'orange');
+  renderKpiCard('Low Stock', $kpis['low_stock'], 'orange');
+  renderKpiCard('Out of Stock', $kpis['out_of_stock'], 'red');
+  renderKpiCard('Expiring Products', $kpis['expiring_products'], 'orange');
+  renderKpiCard('Returned Products', $kpis['returned_products'], 'red');
+  ?>
+</div>
+
+<?php if ($kpis['low_stock']['current'] > 0 || $kpis['out_of_stock']['current'] > 0): ?>
+<div class="alert alert-warning mb-20">
+  <i data-lucide="info"></i>
+  <span><strong>Inventory alerts:</strong>
+    <?= (int)$kpis['out_of_stock']['current'] ?> out of stock ·
+    <?= (int)$kpis['low_stock']['current'] ?> at/below reorder ·
+    <a href="report_inventory.php" style="color:inherit;font-weight:700;">View inventory reports →</a>
+  </span>
+</div>
+<?php endif; ?>
+
+<!-- Charts -->
+<div class="grid-2 mb-20">
+  <div class="card">
+    <div class="card-header"><span class="card-title">Daily Revenue</span></div>
+    <div class="chart-wrap"><canvas id="chartDailyRevenue" data-labels='<?= json_encode($chartDailyLabels) ?>' data-values='<?= json_encode($chartDailyRevenue) ?>'></canvas></div>
   </div>
-  <div class="stat-card green">
-    <div class="stat-icon green"><i data-lucide="dollar-sign"></i></div>
-    <div>
-      <div class="stat-label">Est. Profit</div>
-      <div class="stat-value"><?= number_format($profit, 0) ?></div>
-      <div class="stat-sub"><?= $revenue > 0 ? number_format($profit/$revenue*100,1) : '0' ?>% margin</div>
-    </div>
-  </div>
-  <div class="stat-card orange">
-    <div class="stat-icon orange"><i data-lucide="package-open"></i></div>
-    <div>
-      <div class="stat-label">Purchase Cost</div>
-      <div class="stat-value"><?= number_format($cost, 0) ?></div>
-      <div class="stat-sub"><?= getSetting('currency','ETB') ?> in period</div>
-    </div>
-  </div>
-  <div class="stat-card blue">
-    <div class="stat-icon blue"><i data-lucide="receipt"></i></div>
-    <div>
-      <div class="stat-label">Avg Sale Value</div>
-      <div class="stat-value"><?= $saleCount > 0 ? number_format($revenue/$saleCount, 0) : '0' ?></div>
-      <div class="stat-sub"><?= getSetting('currency','ETB') ?> per transaction</div>
-    </div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">Payment Breakdown</span></div>
+    <div class="chart-wrap chart-donut"><canvas id="chartPayments" data-labels='<?= json_encode($chartPayLabels) ?>' data-values='<?= json_encode($chartPayAmounts) ?>'></canvas></div>
   </div>
 </div>
 
 <div class="grid-2 mb-20">
-  <!-- Daily Sales Table -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">Category Performance</span></div>
+    <div class="chart-wrap"><canvas id="chartCategories" data-labels='<?= json_encode($chartCatLabels) ?>' data-values='<?= json_encode($chartCatRevenue) ?>'></canvas></div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Best Selling Products</span>
+      <a href="report_products.php?<?= reportQueryString($dates, $filters) ?>" class="btn btn-ghost btn-sm">View All →</a>
+    </div>
+    <div class="chart-wrap"><canvas id="chartTopProducts" data-labels='<?= json_encode(array_column(array_slice($topMeds, 0, 8), 'name')) ?>' data-values='<?= json_encode(array_map(fn($r) => (int)$r['qty_sold'], array_slice($topMeds, 0, 8))) ?>'></canvas></div>
+  </div>
+</div>
+
+<div class="card mb-20">
+  <div class="card-header"><span class="card-title">Period Sales Summary</span></div>
+  <div class="report-summary-grid">
+    <div><span class="report-k">Net revenue</span><span class="report-v" style="color:var(--accent2);"><?= currency($revenue) ?></span></div>
+    <div><span class="report-k">COGS</span><span class="report-v"><?= currency($cogs) ?></span></div>
+    <div><span class="report-k">Gross profit</span><span class="report-v" style="color:var(--accent2);"><?= currency($grossProfit) ?></span></div>
+    <div><span class="report-k">Gross margin</span><span class="report-v"><?= number_format($marginPct, 1) ?>%</span></div>
+    <div><span class="report-k">Net profit</span><span class="report-v"><?= currency($kpis['net_profit']['current']) ?></span></div>
+    <div><span class="report-k">Operating expenses</span><span class="report-v"><?= currency($kpis['expenses']['current']) ?></span></div>
+    <div><span class="report-k">Transactions</span><span class="report-v"><?= number_format($saleCount) ?></span></div>
+    <div><span class="report-k">Stock value (cost)</span><span class="report-v"><?= currency($stockCost) ?></span></div>
+    <div><span class="report-k">Stock value (retail)</span><span class="report-v"><?= currency($stockRetail) ?></span></div>
+    <div><span class="report-k">Purchases (period)</span><span class="report-v"><?= currency($purchaseTotal) ?></span></div>
+  </div>
+</div>
+
+<div class="grid-2 mb-20">
   <div class="card">
     <div class="card-header"><span class="card-title">Daily Sales Breakdown</span></div>
-    <div class="table-wrap" style="max-height:340px;overflow-y:auto;">
+    <div class="table-wrap" style="max-height:380px;overflow-y:auto;">
       <table>
-        <thead><tr><th>Date</th><th>Transactions</th><th>Revenue</th></tr></thead>
+        <thead><tr><th>Date</th><th>Txns</th><th>Units</th><th>Revenue</th></tr></thead>
         <tbody>
         <?php if (empty($dailyRows)): ?>
-          <tr><td colspan="3" style="text-align:center;padding:30px;color:var(--text-300);">No data in range</td></tr>
-        <?php else: ?>
-        <?php foreach ($dailyRows as $d): ?>
+          <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-300);">No sales in this period</td></tr>
+        <?php else: foreach ($dailyRows as $d): ?>
         <tr>
-          <td><?= date('D, M d', strtotime($d['day'])) ?></td>
-          <td style="text-align:center;"><?= $d['txn'] ?></td>
+          <td><?= date('D, M j', strtotime($d['day'])) ?></td>
+          <td style="text-align:center;"><?= (int)$d['txn'] ?></td>
+          <td style="text-align:center;"><?= number_format((int)$d['units']) ?></td>
           <td style="font-weight:700;color:var(--accent2);"><?= currency($d['rev']) ?></td>
         </tr>
-        <?php endforeach; ?>
-        <?php endif; ?>
+        <?php endforeach; endif; ?>
         </tbody>
       </table>
     </div>
   </div>
-
-  <!-- Payment Methods -->
   <div class="card">
     <div class="card-header"><span class="card-title">Payment Methods</span></div>
     <?php if (empty($payData)): ?>
-      <div class="empty-state"><i data-lucide="pie-chart"></i><p>No data</p></div>
+      <div class="empty-state"><i data-lucide="pie-chart"></i><p>No payment data</p></div>
     <?php else: ?>
     <div style="display:flex;flex-direction:column;gap:14px;">
-      <?php
-      $totalRev = $revenue ?: 1;
+      <?php $totalRev = $revenue ?: 1;
       foreach ($payData as $p):
-        $pct = round($p['rev'] / $totalRev * 100, 1);
-        $cls = ['cash'=>'green','telebirr'=>'blue','cbe'=>'blue','card'=>'orange','mpesa'=>'green'][$p['payment_method']] ?? 'gray';
+        $pct = round((float)$p['amount'] / $totalRev * 100, 1);
+        $lbl = reportPaymentMethods()[$p['payment_method']] ?? ucfirst($p['payment_method']);
       ?>
       <div>
         <div style="display:flex;justify-content:space-between;font-size:13px;margin-bottom:5px;">
-          <span style="font-weight:600;color:var(--text-100);text-transform:capitalize;"><?= htmlspecialchars($p['payment_method']) ?> <span class="badge badge-gray" style="font-size:10px;"><?= $p['cnt'] ?> sales</span></span>
+          <span style="font-weight:600;color:var(--text-100);"><?= htmlspecialchars($lbl) ?>
+            <span class="badge badge-gray" style="font-size:10px;"><?= (int)$p['cnt'] ?> txns</span></span>
           <span style="color:var(--accent2);font-weight:700;"><?= $pct ?>%</span>
         </div>
-        <div class="progress-bar"><div class="progress-fill <?= $cls ?>" style="width:<?= $pct ?>%;"></div></div>
-        <div style="font-size:11px;color:var(--text-300);margin-top:3px;"><?= currency($p['rev']) ?></div>
+        <div class="progress-bar"><div class="progress-fill green" style="width:<?= $pct ?>%;"></div></div>
+        <div style="font-size:11px;color:var(--text-300);margin-top:3px;"><?= currency($p['amount']) ?></div>
       </div>
       <?php endforeach; ?>
     </div>
@@ -157,30 +242,146 @@ renderSidebar();
   </div>
 </div>
 
-<!-- Top Medicines -->
-<div class="card">
-  <div class="card-header"><span class="card-title">Top Selling Medicines</span></div>
+<div class="card mb-20">
+  <div class="card-header">
+    <span class="card-title">Top Selling Medicines</span>
+    <a href="report_products.php?<?= reportQueryString($dates, $filters) ?>" class="btn btn-ghost btn-sm">Product Reports →</a>
+  </div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Rank</th><th>Medicine</th><th>Qty Sold</th><th>Revenue</th></tr></thead>
+      <thead><tr><th>Rank</th><th>Medicine</th><th>Qty Sold</th><th>Revenue</th><th>Profit</th><th></th></tr></thead>
       <tbody>
-      <?php if (empty($topMedsData)): ?>
-        <tr><td colspan="4" style="text-align:center;padding:30px;color:var(--text-300);">No sales data</td></tr>
-      <?php else: ?>
-      <?php foreach ($topMedsData as $i => $m): ?>
+      <?php if (empty($topMeds)): ?>
+        <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-300);">No sales data</td></tr>
+      <?php else: foreach ($topMeds as $i => $m): ?>
       <tr>
-        <td>
-          <?php if ($i === 0): ?><span style="font-size:18px;">🥇</span>
-          <?php elseif ($i === 1): ?><span style="font-size:18px;">🥈</span>
-          <?php elseif ($i === 2): ?><span style="font-size:18px;">🥉</span>
-          <?php else: ?><span style="color:var(--text-300);font-weight:600;">#<?= $i+1 ?></span><?php endif; ?>
-        </td>
-        <td style="font-weight:600;color:var(--text-100);"><?= htmlspecialchars($m['name']) ?></td>
-        <td><?= number_format($m['qty_sold']) ?> units</td>
+        <td><span class="badge <?= $i < 3 ? 'badge-blue' : 'badge-gray' ?>">#<?= $i + 1 ?></span></td>
+        <td><div style="font-weight:600;"><?= htmlspecialchars($m['name']) ?></div>
+          <div style="font-size:11px;color:var(--text-300);"><?= htmlspecialchars($m['category']) ?></div></td>
+        <td><?= number_format($m['qty_sold']) ?></td>
         <td style="font-weight:700;color:var(--accent2);"><?= currency($m['revenue']) ?></td>
+        <td style="font-weight:700;"><?= currency($m['gross_profit']) ?></td>
+        <td><a href="report_products.php?med=<?= $m['id'] ?>&<?= reportQueryString($dates, $filters) ?>" class="btn btn-ghost btn-sm">Details</a></td>
+      </tr>
+      <?php endforeach; endif; ?>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="grid-2 mb-20">
+  <div class="card">
+    <div class="card-header"><span class="card-title">Sales by Category</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Category</th><th>Units</th><th>Revenue</th></tr></thead>
+        <tbody>
+        <?php foreach ($catData as $c): ?>
+        <tr>
+          <td style="font-weight:600;"><?= htmlspecialchars($c['category']) ?></td>
+          <td><?= number_format($c['qty']) ?></td>
+          <td style="color:var(--accent2);font-weight:700;"><?= currency($c['revenue']) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Top Customers</span>
+      <a href="report_customers.php?<?= reportQueryString($dates, $filters) ?>" class="btn btn-ghost btn-sm">View All →</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Customer</th><th>Visits</th><th>Spent</th></tr></thead>
+        <tbody>
+        <?php foreach ($custData as $c): ?>
+        <tr>
+          <td style="font-weight:600;"><?= htmlspecialchars($c['customer_name']) ?></td>
+          <td><?= (int)$c['visits'] ?></td>
+          <td style="font-weight:700;color:var(--accent2);"><?= currency($c['spent']) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="grid-2 mb-20">
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Low Stock / Reorder</span>
+      <a href="report_inventory.php" class="btn btn-ghost btn-sm">Inventory Reports</a>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Medicine</th><th>Stock</th><th>Reorder</th></tr></thead>
+        <tbody>
+        <?php foreach ($lowMeds as $m): ?>
+        <tr>
+          <td style="font-weight:600;"><?= htmlspecialchars($m['name']) ?></td>
+          <td><?= number_format($m['stock']) ?></td>
+          <td><?= number_format($m['reorder_level']) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-header"><span class="card-title">Slow Movers</span></div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Medicine</th><th>Stock</th><th>Cost Tied Up</th></tr></thead>
+        <tbody>
+        <?php foreach ($slowData as $m): ?>
+        <tr>
+          <td style="font-weight:600;"><?= htmlspecialchars($m['name']) ?></td>
+          <td><?= number_format($m['stock']) ?></td>
+          <td style="color:var(--warning);"><?= currency($m['cost_value']) ?></td>
+        </tr>
+        <?php endforeach; ?>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<div class="card mb-20">
+  <div class="card-header"><span class="card-title">Expiry Risk</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Medicine</th><th>Batch</th><th>Qty</th><th>Expiry</th><th>Value</th></tr></thead>
+      <tbody>
+      <?php foreach ($expiryBatches as $b): ?>
+      <tr>
+        <td style="font-weight:600;"><?= htmlspecialchars($b['name']) ?></td>
+        <td><code><?= htmlspecialchars($b['batch_number']) ?></code></td>
+        <td><?= number_format($b['quantity']) ?></td>
+        <td><?= date('M j, Y', strtotime($b['expiry_date'])) ?></td>
+        <td><?= currency($b['value']) ?></td>
       </tr>
       <?php endforeach; ?>
-      <?php endif; ?>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card mb-20">
+  <div class="card-header"><span class="card-title">Purchases by Supplier</span></div>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>Supplier</th><th>Orders</th><th>Total</th></tr></thead>
+      <tbody>
+      <?php foreach ($supData as $s): ?>
+      <tr>
+        <td style="font-weight:600;"><?= htmlspecialchars($s['supplier']) ?></td>
+        <td><?= (int)$s['orders'] ?></td>
+        <td style="font-weight:700;color:var(--accent2);"><?= currency($s['total']) ?></td>
+      </tr>
+      <?php endforeach; ?>
       </tbody>
     </table>
   </div>

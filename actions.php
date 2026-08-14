@@ -1,7 +1,25 @@
 <?php
-require_once __DIR__ . '/db.php';
+require_once __DIR__ . '/auth.php';
+requireAuth();
 
 $act = $_POST['act'] ?? '';
+
+if ($act === 'seed_demo') {
+    require_once __DIR__ . '/seed_demo.php';
+    $force = !empty($_POST['force']);
+    $result = seedDemoData(getDB(), $force);
+    flashSet($result['ok'] ? 'success' : 'error', $result['message']);
+    header('Location: settings.php');
+    exit;
+}
+
+if ($act === 'clear_demo') {
+    require_once __DIR__ . '/seed_demo.php';
+    $result = clearDemoData(getDB());
+    flashSet($result['ok'] ? 'success' : 'error', $result['message']);
+    header('Location: settings.php');
+    exit;
+}
 
 if ($act === 'clear_sales') {
     $pdo = getDB();
