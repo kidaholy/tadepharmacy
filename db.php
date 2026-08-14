@@ -328,6 +328,32 @@ function currency(float $amount): string {
     return $cur . ' ' . number_format($amount, 2);
 }
 
+function businessToday(): string {
+    return date('Y-m-d');
+}
+
+function businessDayUtcRange(?string $localDate = null): array {
+    $tz = new DateTimeZone('Africa/Addis_Ababa');
+    $utc = new DateTimeZone('UTC');
+    $localDate = $localDate ?? businessToday();
+    $start = new DateTime($localDate . ' 00:00:00', $tz);
+    $end = (clone $start)->modify('+1 day');
+    $start->setTimezone($utc);
+    $end->setTimezone($utc);
+    return [$start->format('Y-m-d H:i:s'), $end->format('Y-m-d H:i:s')];
+}
+
+function businessMonthUtcRange(): array {
+    $tz = new DateTimeZone('Africa/Addis_Ababa');
+    $utc = new DateTimeZone('UTC');
+    $start = new DateTime(date('Y-m-01') . ' 00:00:00', $tz);
+    $end = new DateTime(businessToday() . ' 00:00:00', $tz);
+    $end->modify('+1 day');
+    $start->setTimezone($utc);
+    $end->setTimezone($utc);
+    return [$start->format('Y-m-d H:i:s'), $end->format('Y-m-d H:i:s')];
+}
+
 function flashSet(string $type, string $message): void {
     if (session_status() === PHP_SESSION_NONE) session_start();
     $_SESSION['flash'] = ['type' => $type, 'message' => $message];

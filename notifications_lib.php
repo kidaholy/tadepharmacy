@@ -257,124 +257,47 @@ function dailyReportTimes(): array {
 }
 
 function buildDailyReportMessage(PDO $pdo, string $slot): string {
-    $name = getSetting('pharmacy_name', 'TADE PHARMACY');
+    $snap = dashboardSnapshot($pdo);
     $hour = (int) date('G');
     if ($slot === 'manual') {
         $slot = $hour < 15 ? 'morning' : 'evening';
     }
     $label = $slot === 'evening' ? 'Evening Daily Report' : 'Morning Daily Report';
+    $name = getSetting('pharmacy_name', 'TADE PHARMACY');
     $when = date('D, M j, Y g:i A');
-    $today = date('Y-m-d');
-    $in30 = date('Y-m-d', strtotime('+30 days'));
-
-    $salesStmt = $pdo->prepare("SELECT COUNT(*) FROM sales WHERE date(created_at) = ?");
-    $salesStmt->execute([$today]);
-    $sales = (int) $salesStmt->fetchColumn();
-
-    $revStmt = $pdo->prepare("SELECT COALESCE(SUM(total_amount - discount), 0) FROM sales WHERE date(created_at) = ?");
-    $revStmt->execute([$today]);
-    $revenue = (float) $revStmt->fetchColumn();
-
-    $itemsStmt = $pdo->prepare("
-        SELECT COALESCE(SUM(si.quantity), 0)
-        FROM sale_items si
-        JOIN sales s ON s.id = si.sale_id
-        WHERE date(s.created_at) = ?
-    ");
-    $itemsStmt->execute([$today]);
-    $itemsSold = (int) $itemsStmt->fetchColumn();
-
-    $payStmt = $pdo->prepare("
-        SELECT payment_method, COUNT(*) AS cnt, COALESCE(SUM(total_amount - discount), 0) AS rev
-        FROM sales WHERE date(created_at) = ?
-        GROUP BY payment_method ORDER BY rev DESC
-    ");
-    $payStmt->execute([$today]);
-    $payments = $payStmt->fetchAll();
-
-    $outstanding = (float) $pdo->query("
-        SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
-        WHERE remaining_balance > 0.009 AND (payment_method = 'credit' OR sale_type = 'credit')
-    ")->fetchColumn();
-    $overdueStmt = $pdo->prepare("
-        SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
-        WHERE remaining_balance > 0.009 AND (payment_method = 'credit' OR sale_type = 'credit')
-          AND COALESCE(due_date, credit_due_date) < ?
-    ");
-    $overdueStmt->execute([$today]);
-    $overdue = (float) $overdueStmt->fetchColumn();
-
-    $collectedStmt = $pdo->prepare("
-        SELECT COALESCE(SUM(ph.amount), 0) FROM payment_history ph
-        JOIN sales s ON s.id = ph.sale_id
-        WHERE date(ph.payment_date) = ?
-          AND (s.payment_method = 'credit' OR s.sale_type = 'credit')
-    ");
-    $collectedStmt->execute([$today]);
-    $collected = (float) $collectedStmt->fetchColumn();
-
-    $lowStock = (int) $pdo->query("
-        SELECT COUNT(*) FROM (
-            SELECT m.id FROM medicines m
-            LEFT JOIN batches b ON b.medicine_id = m.id
-            GROUP BY m.id
-            HAVING COALESCE(SUM(b.quantity), 0) <= m.reorder_level
-        ) AS low_meds
-    ")->fetchColumn();
-    $expStmt = $pdo->prepare("SELECT COUNT(*) FROM batches WHERE expiry_date BETWEEN ? AND ? AND quantity > 0");
-    $expStmt->execute([$today, $in30]);
-    $expiring = (int) $expStmt->fetchColumn();
-    $expiredStmt = $pdo->prepare("SELECT COUNT(*) FROM batches WHERE expiry_date < ? AND quantity > 0");
-    $expiredStmt->execute([$today]);
-    $expired = (int) $expiredStmt->fetchColumn();
-
-    $topStmt = $pdo->prepare("
-        SELECT m.name, SUM(si.quantity) AS qty, SUM(si.subtotal) AS rev
-        FROM sale_items si
-        JOIN sales s ON s.id = si.sale_id
-        JOIN medicines m ON m.id = si.medicine_id
-        WHERE date(s.created_at) = ?
-        GROUP BY m.id
-        ORDER BY qty DESC
-        LIMIT 5
-    ");
-    $topStmt->execute([$today]);
-    $top = $topStmt->fetchAll();
-
-    $payLabels = [
-        'cash' => 'Cash', 'credit' => 'Credit', 'cbe' => 'CBE', 'telebirr' => 'Telebirr',
-        'abyssinia' => 'Abyssinia', 'awash' => 'Awash', 'card' => 'Card',
-    ];
+    $methods = posPaymentMethods();
 
     $msg = '<b>' . tgEsc($label) . "</b>\n"
          . tgEsc($name) . "\n"
          . tgEsc($when) . "\n\n"
          . "<b>Sales today</b>\n"
-         . 'Invoices: ' . number_format($sales) . "\n"
-         . 'Items sold: ' . number_format($itemsSold) . "\n"
-         . 'Revenue: ' . tgEsc(currency($revenue)) . "\n";
+         . 'Invoices: ' . number_format($snap['todaySales']) . "\n"
+         . 'Items sold: ' . number_format($snap['itemsSold']) . "\n"
+         . 'Revenue: ' . tgEsc(currency($snap['todayRevenue'])) . "\n"
+         . 'This month: ' . tgEsc(currency($snap['monthRevenue'])) . "\n";
 
-    if ($payments) {
-        foreach ($payments as $p) {
-            $key = strtolower((string) $p['payment_method']);
-            $method = $payLabels[$key] ?? ucwords(str_replace('_', ' ', $key));
+    if (!empty($snap['todayPayments'])) {
+        foreach ($snap['todayPayments'] as $p) {
+            $method = $methods[$p['payment_method']] ?? ucfirst((string) $p['payment_method']);
             $msg .= tgEsc($method) . ': ' . (int) $p['cnt'] . ' · ' . tgEsc(currency((float) $p['rev'])) . "\n";
         }
     }
 
     $msg .= "\n<b>Credit</b>\n"
-          . 'Outstanding: ' . tgEsc(currency($outstanding)) . "\n"
-          . 'Overdue: ' . tgEsc(currency($overdue)) . "\n"
-          . 'Collected today: ' . tgEsc(currency($collected)) . "\n\n"
+          . 'Outstanding: ' . tgEsc(currency($snap['outstandingCredit'])) . "\n"
+          . 'Overdue: ' . tgEsc(currency($snap['overdueCredit'])) . "\n"
+          . 'Collected today: ' . tgEsc(currency($snap['creditCollectedToday'])) . "\n\n"
           . "<b>Inventory</b>\n"
-          . 'Low stock: ' . number_format($lowStock) . "\n"
-          . 'Expiring (30 days): ' . number_format($expiring) . "\n"
-          . 'Expired on shelf: ' . number_format($expired) . "\n";
+          . 'Medicines: ' . number_format($snap['totalMeds']) . "\n"
+          . 'Total units: ' . number_format($snap['totalStock']) . "\n"
+          . 'Low stock: ' . number_format($snap['lowStock']) . "\n"
+          . 'Expiring (30 days): ' . number_format($snap['expiringSoon']) . "\n"
+          . 'Expired on shelf: ' . number_format($snap['expired']) . "\n";
 
-    if ($top) {
+    if (!empty($snap['topProducts'])) {
         $msg .= "\n<b>Top products today</b>\n";
         $i = 1;
-        foreach ($top as $row) {
+        foreach ($snap['topProducts'] as $row) {
             $msg .= $i . '. ' . tgEsc($row['name']) . ' — ' . number_format((int) $row['qty']) . ' sold · ' . tgEsc(currency((float) $row['rev'])) . "\n";
             $i++;
         }

@@ -11,70 +11,8 @@ require_once __DIR__ . '/sales_lib.php';
 require_once __DIR__ . '/notifications_lib.php';
 
 $pdo = getDB();
-
-// KPIs
-$todayRevenue = $pdo->query("SELECT COALESCE(SUM(total_amount - discount), 0) FROM sales WHERE date(created_at) = date('now')")->fetchColumn();
-$todaySales   = $pdo->query("SELECT COUNT(*) FROM sales WHERE date(created_at) = date('now')")->fetchColumn();
-$monthRevenue = $pdo->query("SELECT COALESCE(SUM(total_amount - discount), 0) FROM sales WHERE strftime('%Y-%m', created_at) = strftime('%Y-%m', 'now')")->fetchColumn();
-$totalMeds    = $pdo->query("SELECT COUNT(*) FROM medicines")->fetchColumn();
-$lowStock     = $pdo->query("SELECT COUNT(DISTINCT m.id) FROM medicines m JOIN batches b ON b.medicine_id = m.id GROUP BY m.id HAVING SUM(b.quantity) <= m.reorder_level")->fetchColumn();
-$expiringSoon = $pdo->query("SELECT COUNT(*) FROM batches WHERE expiry_date BETWEEN date('now') AND date('now', '+30 days') AND quantity > 0")->fetchColumn();
-$expired      = $pdo->query("SELECT COUNT(*) FROM batches WHERE expiry_date < date('now') AND quantity > 0")->fetchColumn();
-$totalStock   = $pdo->query("SELECT COALESCE(SUM(quantity), 0) FROM batches")->fetchColumn();
-
-$outstandingCredit = (float)$pdo->query("
-    SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
-    WHERE remaining_balance > 0.009 AND (payment_method = 'credit' OR sale_type = 'credit')
-")->fetchColumn();
-$overdueCredit = (float)$pdo->query("
-    SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
-    WHERE remaining_balance > 0.009 AND (payment_method = 'credit' OR sale_type = 'credit')
-      AND COALESCE(due_date, credit_due_date) < date('now')
-")->fetchColumn();
-$creditCollectedToday = (float)$pdo->query("
-    SELECT COALESCE(SUM(ph.amount), 0) FROM payment_history ph
-    JOIN sales s ON s.id = ph.sale_id
-    WHERE date(ph.payment_date) = date('now')
-      AND (s.payment_method = 'credit' OR s.sale_type = 'credit')
-")->fetchColumn();
-
-$todayPayments = $pdo->query("
-    SELECT payment_method, COUNT(*) AS cnt, COALESCE(SUM(total_amount - discount), 0) AS rev
-    FROM sales WHERE date(created_at) = date('now')
-    GROUP BY payment_method ORDER BY rev DESC
-")->fetchAll();
-
-// Recent sales
-$recentSales = $pdo->query("SELECT s.*, COUNT(si.id) as items FROM sales s LEFT JOIN sale_items si ON si.sale_id = s.id GROUP BY s.id ORDER BY s.created_at DESC LIMIT 8")->fetchAll();
-
-// Low stock medicines
-$lowMeds = $pdo->query("
-    SELECT m.name, m.reorder_level, COALESCE(SUM(b.quantity),0) as stock
-    FROM medicines m
-    LEFT JOIN batches b ON b.medicine_id = m.id
-    GROUP BY m.id
-    HAVING stock <= m.reorder_level
-    ORDER BY stock ASC
-    LIMIT 6
-")->fetchAll();
-
-// Expiring batches
-$expiringBatches = $pdo->query("
-    SELECT b.batch_number, b.expiry_date, b.quantity, m.name
-    FROM batches b
-    JOIN medicines m ON m.id = b.medicine_id
-    WHERE b.expiry_date <= date('now', '+30 days') AND b.quantity > 0
-    ORDER BY b.expiry_date ASC
-    LIMIT 6
-")->fetchAll();
-
-// Last 7 days revenue
-$weekData = $pdo->query("
-    SELECT date(created_at) as day, COALESCE(SUM(total_amount-discount),0) as rev
-    FROM sales
-    WHERE created_at >= date('now', '-6 days')
-    GROUP BY day ORDER BY day
-")->fetchAll();
+$snap = dashboardSnapshot($pdo);
+extract($snap);
 
 renderHead('Dashboard');
 renderSidebar();

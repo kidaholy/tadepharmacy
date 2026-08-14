@@ -175,3 +175,120 @@ function isSaleOverdue(array $sale): bool {
     if ($remaining <= 0.009) return false;
     return $due < date('Y-m-d');
 }
+
+function dashboardSnapshot(PDO $pdo): array {
+    $today = businessToday();
+    [$dayStart, $dayEnd] = businessDayUtcRange($today);
+    [$monthStart, $monthEnd] = businessMonthUtcRange();
+
+    $todayRevenue = (float) scalarBind($pdo, "SELECT COALESCE(SUM(total_amount - discount), 0) FROM sales WHERE created_at >= ? AND created_at < ?", [$dayStart, $dayEnd]);
+    $todaySales = (int) scalarBind($pdo, "SELECT COUNT(*) FROM sales WHERE created_at >= ? AND created_at < ?", [$dayStart, $dayEnd]);
+    $monthRevenue = (float) scalarBind($pdo, "SELECT COALESCE(SUM(total_amount - discount), 0) FROM sales WHERE created_at >= ? AND created_at < ?", [$monthStart, $monthEnd]);
+    $itemsSold = (int) scalarBind($pdo, "
+        SELECT COALESCE(SUM(si.quantity), 0)
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id
+        WHERE s.created_at >= ? AND s.created_at < ?
+    ", [$dayStart, $dayEnd]);
+
+    $totalMeds = (int) $pdo->query("SELECT COUNT(*) FROM medicines")->fetchColumn();
+    $totalStock = (int) $pdo->query("SELECT COALESCE(SUM(quantity), 0) FROM batches")->fetchColumn();
+
+    $lowStock = (int) $pdo->query("
+        SELECT COUNT(*) FROM (
+            SELECT m.id FROM medicines m
+            LEFT JOIN batches b ON b.medicine_id = m.id
+            GROUP BY m.id
+            HAVING COALESCE(SUM(b.quantity), 0) <= m.reorder_level
+        ) AS low_meds
+    ")->fetchColumn();
+
+    $expiringSoon = (int) scalarBind($pdo, "
+        SELECT COUNT(*) FROM batches
+        WHERE expiry_date BETWEEN ? AND date(?, '+30 days') AND quantity > 0
+    ", [$today, $today]);
+    $expired = (int) scalarBind($pdo, "SELECT COUNT(*) FROM batches WHERE expiry_date < ? AND quantity > 0", [$today]);
+
+    $outstandingCredit = (float) $pdo->query("
+        SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
+        WHERE remaining_balance > 0.009 AND (payment_method = 'credit' OR sale_type = 'credit')
+    ")->fetchColumn();
+    $overdueCredit = (float) scalarBind($pdo, "
+        SELECT COALESCE(SUM(remaining_balance), 0) FROM sales
+        WHERE remaining_balance > 0.009 AND (payment_method = 'credit' OR sale_type = 'credit')
+          AND COALESCE(due_date, credit_due_date) < ?
+    ", [$today]);
+    $creditCollectedToday = (float) scalarBind($pdo, "
+        SELECT COALESCE(SUM(ph.amount), 0) FROM payment_history ph
+        JOIN sales s ON s.id = ph.sale_id
+        WHERE ph.payment_date >= ? AND ph.payment_date < ?
+          AND (s.payment_method = 'credit' OR s.sale_type = 'credit')
+    ", [$dayStart, $dayEnd]);
+
+    $payStmt = $pdo->prepare("
+        SELECT payment_method, COUNT(*) AS cnt, COALESCE(SUM(total_amount - discount), 0) AS rev
+        FROM sales WHERE created_at >= ? AND created_at < ?
+        GROUP BY payment_method ORDER BY rev DESC
+    ");
+    $payStmt->execute([$dayStart, $dayEnd]);
+    $todayPayments = $payStmt->fetchAll();
+
+    $lowMeds = $pdo->query("
+        SELECT m.name, m.reorder_level, COALESCE(SUM(b.quantity),0) as stock
+        FROM medicines m
+        LEFT JOIN batches b ON b.medicine_id = m.id
+        GROUP BY m.id
+        HAVING stock <= m.reorder_level
+        ORDER BY stock ASC
+        LIMIT 6
+    ")->fetchAll();
+
+    $expiringBatches = $pdo->prepare("
+        SELECT b.batch_number, b.expiry_date, b.quantity, m.name
+        FROM batches b
+        JOIN medicines m ON m.id = b.medicine_id
+        WHERE b.expiry_date <= date(?, '+30 days') AND b.quantity > 0
+        ORDER BY b.expiry_date ASC
+        LIMIT 6
+    ");
+    $expiringBatches->execute([$today]);
+    $expiringBatches = $expiringBatches->fetchAll();
+
+    $weekStart = (new DateTime($today . ' 00:00:00', new DateTimeZone('Africa/Addis_Ababa')))
+        ->modify('-6 days')->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    $weekStmt = $pdo->prepare("
+        SELECT date(created_at, '+3 hours') as day, COALESCE(SUM(total_amount-discount),0) as rev
+        FROM sales
+        WHERE created_at >= ?
+        GROUP BY day ORDER BY day
+    ");
+    $weekStmt->execute([$weekStart]);
+    $weekData = $weekStmt->fetchAll();
+
+    $recentSales = $pdo->query("SELECT s.*, COUNT(si.id) as items FROM sales s LEFT JOIN sale_items si ON si.sale_id = s.id GROUP BY s.id ORDER BY s.created_at DESC LIMIT 8")->fetchAll();
+
+    $topStmt = $pdo->prepare("
+        SELECT m.name, SUM(si.quantity) AS qty, SUM(si.subtotal) AS rev
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        JOIN medicines m ON m.id = si.medicine_id
+        WHERE s.created_at >= ? AND s.created_at < ?
+        GROUP BY m.id
+        ORDER BY qty DESC
+        LIMIT 5
+    ");
+    $topStmt->execute([$dayStart, $dayEnd]);
+    $topProducts = $topStmt->fetchAll();
+
+    return compact(
+        'today', 'todayRevenue', 'todaySales', 'monthRevenue', 'itemsSold',
+        'totalMeds', 'totalStock', 'lowStock', 'expiringSoon', 'expired',
+        'outstandingCredit', 'overdueCredit', 'creditCollectedToday',
+        'todayPayments', 'lowMeds', 'expiringBatches', 'weekData', 'recentSales', 'topProducts'
+    );
+}
+
+function scalarBind(PDO $pdo, string $sql, array $params) {
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute($params);
+    return $stmt->fetchColumn();
+}
