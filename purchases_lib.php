@@ -202,53 +202,88 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
     $sprices = $post['selling_price'] ?? [];
     $discs = $post['line_discount'] ?? [];
     $taxes = $post['line_tax'] ?? [];
+    $purchaseDate = trim($post['purchase_date'] ?? '') ?: businessToday();
 
     $ids = array_values(array_unique(array_filter(array_map('intval', $meds))));
     $typeMap = [];
+    $nameMap = [];
     if ($ids) {
         $ph = implode(',', array_fill(0, count($ids), '?'));
-        $st = $pdo->prepare("SELECT id, COALESCE(product_type,'medicine') FROM medicines WHERE id IN ($ph)");
+        $st = $pdo->prepare("SELECT id, name, COALESCE(product_type,'medicine') FROM medicines WHERE id IN ($ph)");
         $st->execute($ids);
         foreach ($st->fetchAll(PDO::FETCH_NUM) as $row) {
-            $typeMap[(int)$row[0]] = $row[1];
+            $typeMap[(int)$row[0]] = $row[2];
+            $nameMap[(int)$row[0]] = $row[1];
         }
     }
 
     $items = [];
-    $missingExpiry = false;
+    $seenBatches = [];
     for ($i = 0; $i < count($meds); $i++) {
         $mid = (int)($meds[$i] ?? 0);
         $qty = (int)($qtys[$i] ?? 0);
         $free = (int)($frees[$i] ?? 0);
-        if ($mid <= 0 || ($qty <= 0 && $free <= 0)) continue;
-        $type = $typeMap[$mid] ?? 'medicine';
-        $needExp = productRequiresExpiry($type);
-        $expiry = normalizeExpiryDate($exps[$i] ?? '', $needExp);
-        if ($needExp && !$expiry) {
-            $missingExpiry = true;
+        $batch = trim($batches[$i] ?? '');
+        $lineNo = $i + 1;
+
+        if ($mid <= 0 && $qty <= 0 && $free <= 0 && $batch === '') {
             continue;
         }
+        if ($mid <= 0 || !isset($typeMap[$mid])) {
+            throw new RuntimeException("Line {$lineNo}: select a medication from the master list.");
+        }
+        if ($qty <= 0 && $free <= 0) {
+            throw new RuntimeException("Line {$lineNo}: quantity must be greater than 0 (or enter free quantity).");
+        }
+        if ($batch === '') {
+            throw new RuntimeException("Line {$lineNo}: batch number is required.");
+        }
+
+        $type = $typeMap[$mid];
+        $needExp = productRequiresExpiry($type);
+        $expiryRaw = trim($exps[$i] ?? '');
+        $expiry = normalizeExpiryDate($expiryRaw, $needExp);
+        if ($needExp && !$expiry) {
+            throw new RuntimeException("Line {$lineNo}: expiry date is required for medicines.");
+        }
+        if ($expiryRaw !== '' && !isNoExpiryDate($expiry) && $expiry < $purchaseDate) {
+            throw new RuntimeException("Line {$lineNo}: expiry date cannot be before the purchase date.");
+        }
+
         $price = (float)($pprices[$i] ?? 0);
+        $sell = (float)($sprices[$i] ?? 0);
+        if ($qty > 0 && $price < 0) {
+            throw new RuntimeException("Line {$lineNo}: purchase price is invalid.");
+        }
+        if ($sell < 0) {
+            throw new RuntimeException("Line {$lineNo}: selling price is invalid.");
+        }
+
+        $batchKey = $mid . '|' . strtolower($batch);
+        if (isset($seenBatches[$batchKey])) {
+            $medLabel = $nameMap[$mid] ?? 'medication';
+            throw new RuntimeException("Duplicate batch \"{$batch}\" for {$medLabel} on this invoice. Combine quantities or use a different batch number.");
+        }
+        $seenBatches[$batchKey] = true;
+
         $disc = (float)($discs[$i] ?? 0);
         $tax = (float)($taxes[$i] ?? 0);
         $amt = purchaseLineAmounts($qty, $price, $disc, $tax);
         $items[] = [
             'medicine_id'         => $mid,
             'product_code'        => trim($codes[$i] ?? ''),
-            'batch_number'        => trim($batches[$i] ?? '') ?: ('BATCH-' . date('Ymd') . '-' . ($i + 1)),
+            'batch_number'        => $batch,
             'manufacturing_date'  => trim($mfgs[$i] ?? '') ?: null,
             'expiry_date'         => $expiry,
             'quantity'            => $qty,
             'free_quantity'       => max(0, $free),
             'purchase_price'      => $price,
-            'selling_price'       => (float)($sprices[$i] ?? 0),
+            'selling_price'       => $sell,
             'discount'            => $disc,
             'tax'                 => $tax,
             'line_total'          => $amt['total'],
+            'medicine_name'       => $nameMap[$mid] ?? '',
         ];
-    }
-    if ($missingExpiry) {
-        throw new RuntimeException('Expiry date is required for medicines. Cosmetics and equipment can be saved without an expiry date.');
     }
     if (!$items) {
         throw new RuntimeException('Add at least one product with quantity.');
@@ -258,9 +293,7 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
 
 function createPurchase(PDO $pdo, array $post, int $userId): int {
     $supplierId = (int)($post['supplier_id'] ?? 0);
-    if ($supplierId <= 0) {
-        throw new RuntimeException('Select a supplier.');
-    }
+    $supplierId = $supplierId > 0 ? $supplierId : null;
     $items = parsePurchaseItemsFromPost($pdo, $post);
     $purchaseDate = trim($post['purchase_date'] ?? '') ?: businessToday();
     $terms = trim($post['payment_terms'] ?? '30');
@@ -363,14 +396,43 @@ function createPurchase(PDO $pdo, array $post, int $userId): int {
     }
 }
 
-function receivePurchaseLine(PDO $pdo, int $purchaseId, int $supplierId, array $it): int {
+function receivePurchaseLine(PDO $pdo, int $purchaseId, ?int $supplierId, array $it): int {
     $addQty = (int)$it['quantity'] + (int)$it['free_quantity'];
-    $find = $pdo->prepare("SELECT id, quantity FROM batches WHERE medicine_id=? AND batch_number=? LIMIT 1");
+    $find = $pdo->prepare("
+        SELECT id, quantity, purchase_price, selling_price, expiry_date, manufacture_date
+        FROM batches
+        WHERE medicine_id=? AND batch_number=?
+        LIMIT 1
+    ");
     $find->execute([$it['medicine_id'], $it['batch_number']]);
     $existing = $find->fetch();
     if ($existing) {
-        $pdo->prepare("UPDATE batches SET quantity = quantity + ?, supplier_id=COALESCE(supplier_id, ?), purchase_id=COALESCE(purchase_id, ?), quantity_received = COALESCE(quantity_received, 0) + ?, free_quantity = COALESCE(free_quantity, 0) + ?, status='active' WHERE id=?")
-            ->execute([$addQty, $supplierId, $purchaseId, $addQty, (int)$it['free_quantity'], $existing['id']]);
+        $priceDiff = abs((float)$existing['purchase_price'] - (float)$it['purchase_price']) > 0.009
+            || abs((float)$existing['selling_price'] - (float)$it['selling_price']) > 0.009;
+        $expNew = (string)($it['expiry_date'] ?? '');
+        $expOld = (string)($existing['expiry_date'] ?? '');
+        $expDiff = $expNew !== '' && $expOld !== '' && $expNew !== $expOld
+            && !(isNoExpiryDate($expNew) && isNoExpiryDate($expOld));
+        if ($priceDiff || $expDiff) {
+            $label = $it['medicine_name'] ?? $it['med_name'] ?? ('medicine #' . $it['medicine_id']);
+            throw new RuntimeException(
+                "Batch \"{$it['batch_number']}\" for {$label} already exists with different price or expiry. "
+                . 'Use a different batch number so purchase history and batch pricing stay accurate.'
+            );
+        }
+        // Same lot: add stock only — never overwrite historical purchase/selling prices.
+        $pdo->prepare("
+            UPDATE batches
+            SET quantity = quantity + ?,
+                supplier_id = COALESCE(supplier_id, ?),
+                purchase_id = COALESCE(purchase_id, ?),
+                quantity_received = COALESCE(quantity_received, 0) + ?,
+                free_quantity = COALESCE(free_quantity, 0) + ?,
+                status = 'active'
+            WHERE id = ?
+        ")->execute([
+            $addQty, $supplierId, $purchaseId, $addQty, (int)$it['free_quantity'], $existing['id'],
+        ]);
         return (int)$existing['id'];
     }
     $pdo->prepare("
@@ -396,7 +458,7 @@ function receivePurchase(PDO $pdo, int $purchaseId, int $userId): void {
     try {
         $updItem = $pdo->prepare("UPDATE purchase_items SET batch_id=? WHERE id=?");
         foreach ($items as $it) {
-            $batchId = receivePurchaseLine($pdo, $purchaseId, (int)$p['supplier_id'], $it);
+            $batchId = receivePurchaseLine($pdo, $purchaseId, $p['supplier_id'] !== null ? (int)$p['supplier_id'] : null, $it);
             $updItem->execute([$batchId, $it['id']]);
         }
         $pdo->prepare("UPDATE purchases SET status='received', received_at=datetime('now'), approved_by=?, approved_at=datetime('now'), updated_at=datetime('now') WHERE id=?")
@@ -571,9 +633,12 @@ function fetchPurchase(PDO $pdo, int $id): ?array {
 
 function fetchPurchaseItems(PDO $pdo, int $purchaseId): array {
     $stmt = $pdo->prepare("
-        SELECT pi.*, m.name AS med_name, m.unit, m.sku, COALESCE(m.product_type,'medicine') AS product_type
+        SELECT pi.*, m.name AS med_name, m.generic_name, m.unit, m.sku,
+               COALESCE(m.product_type,'medicine') AS product_type,
+               c.name AS category_name
         FROM purchase_items pi
         JOIN medicines m ON m.id = pi.medicine_id
+        LEFT JOIN categories c ON c.id = m.category_id
         WHERE pi.purchase_id=?
         ORDER BY pi.id
     ");

@@ -37,29 +37,56 @@ runScheduledNotifications(getDB());
 
 $navItems = [];
 $navDefs = [
-    ['page' => 'index',         'icon' => 'grid-2x2',         'label' => 'Dashboard',          'perm' => 'dashboard.view'],
-    ['page' => 'medicines',     'icon' => 'pill',              'label' => 'Medicines',          'perm' => 'medicines.view'],
-    ['page' => 'sales',         'icon' => 'shopping-cart',     'label' => 'Sales',              'perm' => 'sales.view'],
-    ['page' => 'pos',           'icon' => 'plus',              'label' => 'New Sale',           'perm' => 'pos.access', 'child' => true],
-    ['page' => 'customers',     'icon' => 'users',             'label' => 'Customers',          'perm' => 'customers.view'],
-    ['page' => 'customers_add', 'icon' => 'plus',              'label' => 'New Customer',       'perm' => 'customers.manage', 'href' => 'customers.php?action=add', 'child' => true],
-    ['page' => 'purchases',     'icon' => 'package-open',      'label' => 'Purchases',          'perm' => 'purchases.view'],
-    ['page' => 'purchases_add', 'icon' => 'plus',              'label' => 'New Purchase',       'perm' => 'purchases.manage', 'href' => 'purchases.php?action=add', 'child' => true],
-    ['page' => 'suppliers',     'icon' => 'truck',             'label' => 'Suppliers',          'perm' => ['suppliers.view', 'purchases.view']],
-    ['page' => 'suppliers_add', 'icon' => 'plus',              'label' => 'New Supplier',       'perm' => 'suppliers.manage', 'href' => 'suppliers.php?action=add', 'child' => true],
-    ['page' => 'inventory',     'icon' => 'boxes',             'label' => 'Inventory',          'perm' => 'inventory.view'],
-    ['page' => 'reports',       'icon' => 'bar-chart-3',       'label' => 'Reports',            'perm' => 'reports.view'],
-    ['page' => 'landing_cms',   'icon' => 'layout-template',   'label' => 'Landing Page',       'perm' => 'landing.edit'],
-    ['page' => 'administrator', 'icon' => 'shield',            'label' => 'Administrator',      'perm' => ['users.manage', 'roles.manage']],
-    ['page' => 'settings',      'icon' => 'settings',          'label' => 'Settings',           'perm' => 'settings.view'],
+    ['page' => 'index',         'icon' => 'grid-2x2',         'label' => 'Dashboard',     'perm' => 'dashboard.view'],
+    ['page' => 'medicines',     'icon' => 'pill',              'label' => 'Medicines',     'perm' => 'medicines.view'],
+    [
+        'page' => 'sales', 'icon' => 'shopping-cart', 'label' => 'Sales', 'perm' => 'sales.view',
+        'children' => [
+            ['page' => 'pos', 'icon' => 'plus', 'label' => 'New Sale', 'perm' => 'pos.access'],
+        ],
+    ],
+    [
+        'page' => 'customers', 'icon' => 'users', 'label' => 'Customers', 'perm' => 'customers.view',
+        'children' => [
+            ['page' => 'customers_add', 'icon' => 'plus', 'label' => 'New Customer', 'perm' => 'customers.manage', 'href' => 'customers.php?action=add'],
+        ],
+    ],
+    [
+        'page' => 'purchases', 'icon' => 'package-open', 'label' => 'Purchases', 'perm' => 'purchases.view',
+        'children' => [
+            ['page' => 'purchases_add', 'icon' => 'plus', 'label' => 'New Purchase', 'perm' => 'purchases.manage', 'href' => 'purchases.php?action=add'],
+        ],
+    ],
+    [
+        'page' => 'suppliers', 'icon' => 'truck', 'label' => 'Suppliers', 'perm' => ['suppliers.view', 'purchases.view'],
+        'children' => [
+            ['page' => 'suppliers_add', 'icon' => 'plus', 'label' => 'New Supplier', 'perm' => 'suppliers.manage', 'href' => 'suppliers.php?action=add'],
+        ],
+    ],
+    ['page' => 'inventory',     'icon' => 'boxes',             'label' => 'Inventory',     'perm' => 'inventory.view'],
+    ['page' => 'reports',       'icon' => 'bar-chart-3',       'label' => 'Reports',       'perm' => 'reports.view'],
+    ['page' => 'landing_cms',   'icon' => 'layout-template',   'label' => 'Landing Page',  'perm' => 'landing.edit'],
+    ['page' => 'administrator', 'icon' => 'shield',            'label' => 'Administrator', 'perm' => ['users.manage', 'roles.manage']],
+    ['page' => 'settings',      'icon' => 'settings',          'label' => 'Settings',      'perm' => 'settings.view'],
 ];
 foreach ($navDefs as $item) {
     $perm = $item['perm'];
     $allowed = is_array($perm) ? canAny($perm) : can($perm);
-    if ($allowed) {
-        unset($item['perm']);
-        $navItems[] = $item;
+    if (!$allowed) {
+        continue;
     }
+    $children = [];
+    foreach ($item['children'] ?? [] as $child) {
+        $cPerm = $child['perm'];
+        $cOk = is_array($cPerm) ? canAny($cPerm) : can($cPerm);
+        if ($cOk) {
+            unset($child['perm']);
+            $children[] = $child;
+        }
+    }
+    unset($item['perm'], $item['children']);
+    $item['children'] = $children;
+    $navItems[] = $item;
 }
 
 function renderHead(string $title = '', string $bodyClass = ''): void {
@@ -72,7 +99,7 @@ function renderHead(string $title = '', string $bodyClass = ''): void {
     echo "<link rel=\"preconnect\" href=\"https://fonts.googleapis.com\">\n";
     echo "<link href=\"https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap\" rel=\"stylesheet\">\n";
     echo "<script src=\"https://unpkg.com/lucide@0.460.0\" defer></script>\n";
-    echo "<link rel=\"stylesheet\" href=\"assets/style.css\">\n";
+    echo "<link rel=\"stylesheet\" href=\"assets/style.css?v=" . filemtime(__DIR__ . '/assets/style.css') . "\">\n";
     renderPharmacyFavicon();
     echo "</head>\n";
     $cls = $bodyClass ? ' class="' . htmlspecialchars($bodyClass) . '"' : '';
@@ -81,6 +108,17 @@ function renderHead(string $title = '', string $bodyClass = ''): void {
 
 function renderSidebar(): void {
     global $currentPage, $navItems, $pharmacyName, $user;
+
+    $renderLink = static function (array $item, bool $child = false) use ($currentPage): void {
+        $active = ($currentPage === $item['page']) ? ' active' : '';
+        $cls = $child ? 'nav-item nav-subitem' . $active : 'nav-item' . $active;
+        $href = $item['href'] ?? ($item['page'] . '.php');
+        echo '<a href="' . htmlspecialchars($href) . '" class="' . $cls . '">';
+        echo '<i data-lucide="' . htmlspecialchars($item['icon']) . '"></i>';
+        echo '<span>' . htmlspecialchars($item['label']) . '</span>';
+        echo '</a>';
+    };
+
     echo '<aside class="sidebar" id="sidebar">';
     echo '<div class="sidebar-logo">';
     renderPharmacyLogo();
@@ -88,13 +126,25 @@ function renderSidebar(): void {
     echo '</div>';
     echo '<nav class="sidebar-nav">';
     foreach ($navItems as $item) {
-        $active = ($currentPage === $item['page']) ? ' active' : '';
-        $child = !empty($item['child']) ? ' nav-item-child' : '';
-        $href = $item['href'] ?? ($item['page'] . '.php');
-        echo "<a href=\"" . htmlspecialchars($href) . "\" class=\"nav-item{$child}{$active}\">";
-        echo "<i data-lucide=\"{$item['icon']}\"></i>";
-        echo "<span>{$item['label']}</span>";
-        echo "</a>";
+        $children = $item['children'] ?? [];
+        if ($children) {
+            $groupActive = ($currentPage === $item['page']);
+            foreach ($children as $child) {
+                if ($currentPage === $child['page']) {
+                    $groupActive = true;
+                    break;
+                }
+            }
+            echo '<div class="nav-group' . ($groupActive ? ' is-open' : '') . '">';
+            $renderLink($item, false);
+            echo '<div class="nav-sub">';
+            foreach ($children as $child) {
+                $renderLink($child, true);
+            }
+            echo '</div></div>';
+        } else {
+            $renderLink($item, false);
+        }
     }
     echo '</nav>';
     echo '<div class="sidebar-footer">';

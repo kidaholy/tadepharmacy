@@ -89,7 +89,14 @@ $flash = flashGet();
 if ($flash && $flash['type'] === 'success') $msg = $flash['message'];
 
 $suppliers = $pdo->query("SELECT * FROM suppliers WHERE COALESCE(status,'active')='active' ORDER BY name COLLATE NOCASE")->fetchAll();
-$medicines = $pdo->query("SELECT id, name, generic_name, unit, sku, COALESCE(product_type,'medicine') AS product_type FROM medicines ORDER BY name COLLATE NOCASE")->fetchAll();
+$medicines = $pdo->query("
+    SELECT m.id, m.name, m.generic_name, m.unit, m.sku,
+           COALESCE(m.product_type,'medicine') AS product_type,
+           c.name AS category_name
+    FROM medicines m
+    LEFT JOIN categories c ON c.id = m.category_id
+    ORDER BY m.name COLLATE NOCASE
+")->fetchAll();
 $taxDefault = (float)getSetting('tax_rate', '0');
 
 $purchase = null;
@@ -151,10 +158,10 @@ renderSidebar();
         <input type="text" value="<?= htmlspecialchars($nextNumber) ?>" disabled>
       </div>
       <div class="form-group">
-        <label>Supplier *</label>
+        <label>Supplier <span style="color:var(--text-300);font-weight:400;">(optional)</span></label>
         <div style="display:flex;gap:8px;">
-          <select name="supplier_id" id="supplierSelect" required style="flex:1;">
-            <option value="">Select supplier...</option>
+          <select name="supplier_id" id="supplierSelect" style="flex:1;">
+            <option value="">No supplier / Walk-in</option>
             <?php foreach ($suppliers as $s): ?>
             <option value="<?= $s['id'] ?>" data-terms="<?= htmlspecialchars($s['payment_terms'] ?? '30') ?>" data-days="<?= (int)($s['default_credit_days'] ?? 30) ?>" <?= $preSupplier === (int)$s['id'] ? 'selected' : '' ?>><?= htmlspecialchars($s['name']) ?></option>
             <?php endforeach; ?>
@@ -196,65 +203,109 @@ renderSidebar();
   <div class="card mb-20">
     <div class="card-header">
       <span class="card-title">Products</span>
-      <button type="button" class="btn btn-ghost btn-sm" onclick="addRow()">+ Add Item</button>
+      <button type="button" class="btn btn-ghost btn-sm" onclick="addRow()"><i data-lucide="plus"></i> Add Product</button>
     </div>
+    <p class="purchase-flow-hint">Select medication → confirm product info → enter batch → quantity &amp; prices → add another item or batch.</p>
+    <div id="purchaseValidateMsg" class="alert alert-danger" hidden style="margin:0 0 14px;"></div>
     <div id="itemsBody" class="purchase-items">
       <div class="purchase-item item-row">
-        <div class="form-group pg-wide">
-          <label>Product</label>
-          <div class="product-picker">
-            <input type="hidden" name="medicine_id[]" class="product-id" value="">
-            <input type="hidden" name="product_code[]" class="product-code">
-            <input type="text" class="product-search" placeholder="Type to search product..." autocomplete="off"
-                   onfocus="openProductPicker(this)" oninput="filterProductPicker(this)" onkeydown="productPickerKey(event)">
-            <div class="product-picker-list" hidden></div>
+        <div class="purchase-item-section">
+          <div class="purchase-section-label">1. Medication</div>
+          <div class="form-group pg-wide">
+            <label>Medication / Brand Name</label>
+            <div class="product-picker">
+              <input type="hidden" name="medicine_id[]" class="product-id" value="">
+              <input type="hidden" name="product_code[]" class="product-code">
+              <input type="text" class="product-search" placeholder="Search brand, generic, or SKU..." autocomplete="off"
+                     onfocus="openProductPicker(this)" oninput="filterProductPicker(this)" onkeydown="productPickerKey(event)">
+              <div class="product-picker-list" hidden></div>
+            </div>
+          </div>
+          <div class="purchase-med-info">
+            <div class="form-group">
+              <label>Brand Name</label>
+              <input type="text" class="med-brand" readonly tabindex="-1" placeholder="—">
+            </div>
+            <div class="form-group">
+              <label>Generic Name</label>
+              <input type="text" class="med-generic" readonly tabindex="-1" placeholder="—">
+            </div>
+            <div class="form-group">
+              <label>Dispensing Unit</label>
+              <input type="text" class="med-unit" readonly tabindex="-1" placeholder="—">
+            </div>
+            <div class="form-group">
+              <label>Medication Category</label>
+              <input type="text" class="med-category" readonly tabindex="-1" placeholder="—">
+            </div>
           </div>
         </div>
-        <div class="form-group">
-          <label>Batch</label>
-          <input type="text" name="batch_number[]" placeholder="Batch #">
+
+        <div class="purchase-item-section">
+          <div class="purchase-section-label">2. Batch Information</div>
+          <div class="purchase-batch-fields">
+            <div class="form-group">
+              <label>Batch Number</label>
+              <input type="text" name="batch_number[]" class="batch-number" placeholder="Batch #">
+            </div>
+            <div class="form-group">
+              <label>Manufacturing Date</label>
+              <input type="date" name="manufacturing_date[]">
+            </div>
+            <div class="form-group">
+              <label>Expiry Date <span class="expiry-hint" style="color:var(--text-300);font-weight:400;"></span></label>
+              <input type="date" name="expiry_date[]" class="expiry-input">
+            </div>
+          </div>
         </div>
-        <div class="form-group">
-          <label>Mfg</label>
-          <input type="date" name="manufacturing_date[]">
+
+        <div class="purchase-item-section">
+          <div class="purchase-section-label">3. Quantity &amp; Pricing</div>
+          <div class="purchase-qty-fields">
+            <div class="form-group">
+              <label>Quantity</label>
+              <input type="number" name="quantity[]" class="qty-paid" min="0" value="1" oninput="recalc()">
+            </div>
+            <div class="form-group">
+              <label>Free Quantity</label>
+              <input type="number" name="free_quantity[]" class="qty-free" min="0" value="0" oninput="recalc()">
+            </div>
+            <div class="form-group">
+              <label>Stock Received</label>
+              <div class="purchase-stock-received stock-received">1</div>
+            </div>
+            <div class="form-group">
+              <label>Purchase Price</label>
+              <input type="number" name="purchase_price[]" min="0" step="0.01" value="0" oninput="recalc()">
+            </div>
+            <div class="form-group">
+              <label>Selling Price <span style="color:var(--text-300);font-weight:400;">(batch)</span></label>
+              <input type="number" name="selling_price[]" min="0" step="0.01" value="0" oninput="recalc()">
+            </div>
+            <div class="form-group">
+              <label>Disc %</label>
+              <input type="number" name="line_discount[]" min="0" step="0.01" value="0" oninput="recalc()">
+            </div>
+            <div class="form-group">
+              <label>Tax %</label>
+              <input type="number" name="line_tax[]" min="0" step="0.01" value="<?= htmlspecialchars((string)$taxDefault) ?>" oninput="recalc()">
+            </div>
+            <div class="form-group">
+              <label>Item Cost</label>
+              <div class="purchase-item-total line-total">0.00</div>
+            </div>
+          </div>
+          <p class="purchase-line-note">Item cost = paid quantity × purchase price (free qty adds stock only). Selling price is stored on this batch.</p>
         </div>
-        <div class="form-group">
-          <label>Expiry <span class="expiry-hint" style="color:var(--text-300);font-weight:400;"></span></label>
-          <input type="date" name="expiry_date[]" class="expiry-input">
-        </div>
-        <div class="form-group">
-          <label>Qty</label>
-          <input type="number" name="quantity[]" min="0" value="1" oninput="recalc()">
-        </div>
-        <div class="form-group">
-          <label>Free</label>
-          <input type="number" name="free_quantity[]" min="0" value="0">
-        </div>
-        <div class="form-group">
-          <label>Buy</label>
-          <input type="number" name="purchase_price[]" min="0" step="0.01" value="0" oninput="recalc()">
-        </div>
-        <div class="form-group">
-          <label>Sell</label>
-          <input type="number" name="selling_price[]" min="0" step="0.01" value="0">
-        </div>
-        <div class="form-group">
-          <label>Disc %</label>
-          <input type="number" name="line_discount[]" min="0" step="0.01" value="0" oninput="recalc()">
-        </div>
-        <div class="form-group">
-          <label>Tax %</label>
-          <input type="number" name="line_tax[]" min="0" step="0.01" value="<?= htmlspecialchars((string)$taxDefault) ?>" oninput="recalc()">
-        </div>
-        <div class="form-group">
-          <label>Line Total</label>
-          <div class="purchase-item-total line-total">0.00</div>
-        </div>
-        <div class="form-group">
-          <label>&nbsp;</label>
-          <button type="button" class="btn btn-danger btn-sm" onclick="removeRow(this)">Del</button>
+
+        <div class="purchase-item-actions">
+          <button type="button" class="btn btn-ghost btn-sm" onclick="addBatchOfSame(this)">+ Same medication, new batch</button>
+          <button type="button" class="btn btn-danger btn-sm" onclick="removeRow(this)">Remove</button>
         </div>
       </div>
+    </div>
+    <div class="purchase-add-footer">
+      <button type="button" class="btn btn-primary btn-sm" onclick="addRow()"><i data-lucide="plus"></i> Add Product</button>
     </div>
   </div>
 
@@ -290,19 +341,22 @@ renderSidebar();
       <div class="card-header"><span class="card-title">Summary</span></div>
       <div class="form-row">
         <div class="form-group">
-          <label>Extra Discount</label>
+          <label>Invoice Discount</label>
           <input type="number" name="header_discount" id="headerDiscount" min="0" step="0.01" value="0" oninput="recalc()">
         </div>
         <div class="form-group">
-          <label>Extra Tax</label>
+          <label>Invoice Tax</label>
           <input type="number" name="header_tax" id="headerTax" min="0" step="0.01" value="0" oninput="recalc()">
         </div>
       </div>
-      <div class="report-summary-grid">
+      <div class="report-summary-grid purchase-summary-grid">
         <div><span class="report-k">Subtotal</span><span class="report-v" id="sumSub">0.00</span></div>
+        <div><span class="report-k">Item Discounts</span><span class="report-v" id="sumItemDisc">0.00</span></div>
+        <div><span class="report-k">Invoice Discount</span><span class="report-v" id="sumInvDisc">0.00</span></div>
+        <div><span class="report-k">Tax</span><span class="report-v" id="sumTax">0.00</span></div>
         <div><span class="report-k">Grand Total</span><span class="report-v" id="sumGrand">0.00</span></div>
-        <div><span class="report-k">Paid</span><span class="report-v" id="sumPaid">0.00</span></div>
-        <div><span class="report-k">Remaining</span><span class="report-v" id="sumDue" style="color:var(--warning);">0.00</span></div>
+        <div><span class="report-k">Amount Paid</span><span class="report-v" id="sumPaid">0.00</span></div>
+        <div><span class="report-k">Supplier Credit / Balance Due</span><span class="report-v" id="sumDue" style="color:var(--warning);">0.00</span></div>
       </div>
     </div>
   </div>
@@ -375,10 +429,12 @@ const productCatalog = <?= json_encode(array_map(static function ($m) {
         'generic' => $m['generic_name'] ?? '',
         'unit' => $m['unit'] ?? '',
         'sku' => $m['sku'] ?? '',
+        'category' => $m['category_name'] ?? '',
         'type' => $type,
         'requiresExpiry' => productRequiresExpiry($type) ? 1 : 0,
     ];
 }, $medicines), JSON_UNESCAPED_UNICODE) ?>;
+const taxDefault = <?= json_encode((string)$taxDefault) ?>;
 
 function syncExpiryField(row, requires) {
   const exp = row.querySelector('.expiry-input');
@@ -390,6 +446,13 @@ function syncExpiryField(row, requires) {
       ? 'Expiry date is required for medicines'
       : 'Optional for cosmetics and equipment — leave blank if none';
   }
+}
+
+function fillMedInfo(row, p) {
+  row.querySelector('.med-brand').value = p ? (p.name || '') : '';
+  row.querySelector('.med-generic').value = p ? (p.generic || '') : '';
+  row.querySelector('.med-unit').value = p ? (p.unit || '') : '';
+  row.querySelector('.med-category').value = p ? (p.category || '') : '';
 }
 
 function pickerFrom(el) {
@@ -407,22 +470,24 @@ function filterProductPicker(input) {
   const q = (input.value || '').trim().toLowerCase();
   if (q) {
     picker.querySelector('.product-id').value = '';
+    fillMedInfo(picker.closest('.item-row'), null);
   }
   const matches = productCatalog.filter(p => {
     if (!q) return true;
     return (p.name || '').toLowerCase().includes(q)
       || (p.generic || '').toLowerCase().includes(q)
-      || (p.sku || '').toLowerCase().includes(q);
+      || (p.sku || '').toLowerCase().includes(q)
+      || (p.category || '').toLowerCase().includes(q);
   }).slice(0, 40);
   if (!matches.length) {
-    list.innerHTML = '<div class="product-picker-empty">No matching product</div>';
+    list.innerHTML = '<div class="product-picker-empty">No matching medication. Add it in Medicines first.</div>';
     list.hidden = false;
     return;
   }
   list.innerHTML = matches.map((p, i) =>
     `<button type="button" class="product-picker-item${i === 0 ? ' active' : ''}" data-id="${p.id}">`
     + `${escapeHtml(p.name)}`
-    + `<small>${escapeHtml([p.generic, p.unit, p.sku, p.type].filter(Boolean).join(' · '))}</small>`
+    + `<small>${escapeHtml([p.generic, p.unit, p.category, p.sku].filter(Boolean).join(' · '))}</small>`
     + `</button>`
   ).join('');
   list.hidden = false;
@@ -439,7 +504,10 @@ function selectProduct(picker, id) {
   picker.querySelector('.product-search').value = p.name;
   picker.querySelector('.product-picker-list').hidden = true;
   const row = picker.closest('.item-row');
+  fillMedInfo(row, p);
   syncExpiryField(row, !!p.requiresExpiry);
+  const batch = row.querySelector('.batch-number');
+  if (batch) batch.focus();
 }
 function productPickerKey(e) {
   const picker = pickerFrom(e.target);
@@ -472,26 +540,42 @@ function escapeHtml(s) {
 document.addEventListener('click', e => {
   if (!e.target.closest('.product-picker')) hideAllPickers();
 });
-function lineTotal(row) {
+
+function lineAmounts(row) {
   const qty = parseFloat(row.querySelector('[name="quantity[]"]').value) || 0;
   const price = parseFloat(row.querySelector('[name="purchase_price[]"]').value) || 0;
   const disc = parseFloat(row.querySelector('[name="line_discount[]"]').value) || 0;
   const tax = parseFloat(row.querySelector('[name="line_tax[]"]').value) || 0;
   const gross = qty * price;
-  const net = gross - gross * disc / 100;
-  return net + net * tax / 100;
+  const discountAmt = gross * disc / 100;
+  const net = gross - discountAmt;
+  const taxAmt = net * tax / 100;
+  return { gross, discountAmt, taxAmt, total: net + taxAmt, qty, price };
 }
 function recalc() {
-  let sub = 0;
+  let subGross = 0;
+  let itemDisc = 0;
+  let itemTax = 0;
+  let subNet = 0;
   document.querySelectorAll('.item-row').forEach(row => {
-    const t = lineTotal(row);
-    sub += t;
-    row.querySelector('.line-total').textContent = t.toFixed(2);
+    const a = lineAmounts(row);
+    subGross += a.gross;
+    itemDisc += a.discountAmt;
+    itemTax += a.taxAmt;
+    subNet += a.total;
+    row.querySelector('.line-total').textContent = a.total.toFixed(2);
+    const paid = parseFloat(row.querySelector('.qty-paid')?.value) || 0;
+    const free = parseFloat(row.querySelector('.qty-free')?.value) || 0;
+    const stockEl = row.querySelector('.stock-received');
+    if (stockEl) stockEl.textContent = String(paid + free);
   });
-  const extraD = parseFloat(document.getElementById('headerDiscount').value) || 0;
-  const extraT = parseFloat(document.getElementById('headerTax').value) || 0;
-  const grand = Math.max(0, sub - extraD + extraT);
-  document.getElementById('sumSub').textContent = sub.toFixed(2);
+  const invDisc = parseFloat(document.getElementById('headerDiscount').value) || 0;
+  const invTax = parseFloat(document.getElementById('headerTax').value) || 0;
+  const grand = Math.max(0, subNet - invDisc + invTax);
+  document.getElementById('sumSub').textContent = subGross.toFixed(2);
+  document.getElementById('sumItemDisc').textContent = itemDisc.toFixed(2);
+  document.getElementById('sumInvDisc').textContent = invDisc.toFixed(2);
+  document.getElementById('sumTax').textContent = (itemTax + invTax).toFixed(2);
   document.getElementById('sumGrand').textContent = grand.toFixed(2);
   syncPaymentType();
 }
@@ -506,27 +590,166 @@ function syncPaymentType() {
   document.getElementById('sumDue').textContent = Math.max(0, grand - paid).toFixed(2);
 }
 document.getElementById('amountPaid').addEventListener('input', syncPaymentType);
+
+function resetRowFields(row, opts = {}) {
+  row.querySelectorAll('input').forEach(i => {
+    if (i.classList.contains('med-brand') || i.classList.contains('med-generic')
+        || i.classList.contains('med-unit') || i.classList.contains('med-category')) {
+      if (!opts.keepMedicine) i.value = '';
+      return;
+    }
+    if (i.type === 'number') {
+      if (i.name.indexOf('quantity') !== -1 && i.name.indexOf('free') === -1) i.value = '1';
+      else i.value = '0';
+    } else if (i.type !== 'hidden') {
+      if (opts.keepMedicine && i.classList.contains('product-search')) return;
+      i.value = '';
+    } else if (i.classList.contains('product-id') || i.classList.contains('product-code')) {
+      if (!opts.keepMedicine) i.value = '';
+    }
+  });
+  const tax = row.querySelector('[name="line_tax[]"]');
+  if (tax) tax.value = taxDefault;
+  const list = row.querySelector('.product-picker-list');
+  if (list) { list.hidden = true; list.innerHTML = ''; }
+  if (!opts.keepMedicine) {
+    syncExpiryField(row, false);
+    fillMedInfo(row, null);
+  }
+  const stock = row.querySelector('.stock-received');
+  if (stock) stock.textContent = '1';
+  const total = row.querySelector('.line-total');
+  if (total) total.textContent = '0.00';
+}
+
 function addRow() {
   const tbody = document.getElementById('itemsBody');
   const row = tbody.querySelector('.item-row').cloneNode(true);
-  row.querySelectorAll('input').forEach(i => {
-    if (i.type === 'number') i.value = i.name.indexOf('quantity') !== -1 && i.name.indexOf('free') === -1 ? '1' : '0';
-    else if (i.type !== 'hidden') i.value = '';
-    else if (i.classList.contains('product-id') || i.classList.contains('product-code')) i.value = '';
-  });
-  const tax = row.querySelector('[name="line_tax[]"]');
-  if (tax) tax.value = <?= json_encode((string)$taxDefault) ?>;
-  const list = row.querySelector('.product-picker-list');
-  if (list) { list.hidden = true; list.innerHTML = ''; }
-  const exp = row.querySelector('.expiry-input');
-  if (exp) exp.required = false;
-  syncExpiryField(row, false);
+  resetRowFields(row);
   tbody.appendChild(row);
+  row.querySelector('.product-search')?.focus();
+  if (window.lucide) lucide.createIcons();
+  recalc();
 }
+
+function addBatchOfSame(btn) {
+  const src = btn.closest('.item-row');
+  const mid = parseInt(src.querySelector('.product-id').value, 10) || 0;
+  if (!mid) {
+    showValidate('Select a medication before adding another batch.');
+    return;
+  }
+  const p = productCatalog.find(x => x.id === mid);
+  const tbody = document.getElementById('itemsBody');
+  const row = src.cloneNode(true);
+  resetRowFields(row, { keepMedicine: true });
+  if (p) {
+    row.querySelector('.product-id').value = p.id;
+    row.querySelector('.product-code').value = p.sku || '';
+    row.querySelector('.product-search').value = p.name;
+    fillMedInfo(row, p);
+    syncExpiryField(row, !!p.requiresExpiry);
+  }
+  tbody.appendChild(row);
+  row.querySelector('.batch-number')?.focus();
+  if (window.lucide) lucide.createIcons();
+  hideValidate();
+  recalc();
+}
+
 function removeRow(btn) {
   if (document.querySelectorAll('.item-row').length > 1) btn.closest('.item-row').remove();
   recalc();
 }
+
+function showValidate(msg) {
+  const el = document.getElementById('purchaseValidateMsg');
+  el.textContent = msg;
+  el.hidden = false;
+  el.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+function hideValidate() {
+  const el = document.getElementById('purchaseValidateMsg');
+  el.hidden = true;
+  el.textContent = '';
+}
+
+function validatePurchaseForm() {
+  hideValidate();
+  const purchaseDate = document.getElementById('purchaseDate').value;
+  const seen = new Map();
+  const rows = [...document.querySelectorAll('.item-row')];
+  let hasLine = false;
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i];
+    const mid = parseInt(row.querySelector('.product-id').value, 10) || 0;
+    const qty = parseFloat(row.querySelector('[name="quantity[]"]').value) || 0;
+    const free = parseFloat(row.querySelector('[name="free_quantity[]"]').value) || 0;
+    const buy = parseFloat(row.querySelector('[name="purchase_price[]"]').value);
+    const sell = parseFloat(row.querySelector('[name="selling_price[]"]').value);
+    const batch = (row.querySelector('[name="batch_number[]"]').value || '').trim();
+    const expiry = (row.querySelector('[name="expiry_date[]"]').value || '').trim();
+    const p = productCatalog.find(x => x.id === mid);
+    const n = i + 1;
+
+    if (!mid && qty <= 0 && free <= 0 && !batch) continue;
+    hasLine = true;
+
+    if (!mid) {
+      showValidate(`Line ${n}: select a medication from the list.`);
+      return false;
+    }
+    if (qty <= 0 && free <= 0) {
+      showValidate(`Line ${n}: enter a quantity greater than 0 (or free quantity).`);
+      return false;
+    }
+    if (qty > 0 && (!(buy >= 0) || Number.isNaN(buy))) {
+      showValidate(`Line ${n}: enter a valid purchase price.`);
+      return false;
+    }
+    if (!(sell >= 0) || Number.isNaN(sell)) {
+      showValidate(`Line ${n}: enter a valid selling price for this batch.`);
+      return false;
+    }
+    if (!batch) {
+      showValidate(`Line ${n}: enter a batch number.`);
+      return false;
+    }
+    if (p && p.requiresExpiry && !expiry) {
+      showValidate(`Line ${n}: expiry date is required for medicines.`);
+      return false;
+    }
+    if (expiry && purchaseDate && expiry < purchaseDate) {
+      showValidate(`Line ${n}: expiry date cannot be before the purchase date.`);
+      return false;
+    }
+    const key = mid + '|' + batch.toLowerCase();
+    if (seen.has(key)) {
+      showValidate(`Line ${n}: duplicate batch "${batch}" for the same medication on this invoice. Combine quantities or use a different batch number.`);
+      return false;
+    }
+    seen.set(key, n);
+  }
+
+  if (!hasLine) {
+    showValidate('Add at least one medication with quantity.');
+    return false;
+  }
+
+  const grand = parseFloat(document.getElementById('sumGrand').textContent) || 0;
+  const paid = parseFloat(document.getElementById('amountPaid').value) || 0;
+  if (paid - grand > 0.009) {
+    showValidate('Amount paid cannot exceed the grand total.');
+    return false;
+  }
+  return true;
+}
+
+document.getElementById('purchaseForm').addEventListener('submit', function(e) {
+  if (!validatePurchaseForm()) e.preventDefault();
+});
+
 syncDueDate();
 recalc();
 document.querySelectorAll('.item-row').forEach(row => syncExpiryField(row, false));
@@ -554,14 +777,17 @@ document.querySelectorAll('.item-row').forEach(row => syncExpiryField(row, false
   </div>
   <div class="report-summary-grid">
     <div><span class="report-k">Supplier</span><span class="report-v"><?= htmlspecialchars($purchase['supplier_name'] ?? '—') ?></span></div>
-    <div><span class="report-k">Date</span><span class="report-v"><?= htmlspecialchars($purchase['purchase_date'] ?: date('Y-m-d', strtotime($purchase['created_at']))) ?></span></div>
+    <div><span class="report-k">Invoice Number</span><span class="report-v"><?= htmlspecialchars($purchase['purchase_number']) ?></span></div>
+    <div><span class="report-k">Purchase Date</span><span class="report-v"><?= htmlspecialchars($purchase['purchase_date'] ?: date('Y-m-d', strtotime($purchase['created_at']))) ?></span></div>
+    <div><span class="report-k">Payment Terms</span><span class="report-v"><?= htmlspecialchars(supplierPaymentTerms()[$purchase['payment_terms'] ?? ''] ?? ($purchase['payment_terms'] ?: '—')) ?></span></div>
     <div><span class="report-k">Due Date</span><span class="report-v"><?= $purchase['due_date'] ? htmlspecialchars($purchase['due_date']) : '—' ?></span></div>
-    <div><span class="report-k">Original Total</span><span class="report-v"><?= currency($grand) ?></span></div>
-    <div><span class="report-k">Paid</span><span class="report-v" style="color:var(--accent2);"><?= currency($paid) ?></span></div>
-    <div><span class="report-k">Returned</span><span class="report-v"><?= currency($returned) ?></span></div>
-    <div><span class="report-k">Outstanding</span><span class="report-v" style="color:var(--warning);"><?= currency($due) ?></span></div>
+    <div><span class="report-k">Warehouse</span><span class="report-v"><?= htmlspecialchars($purchase['warehouse'] ?: '—') ?></span></div>
+    <div><span class="report-k">Reference</span><span class="report-v"><?= htmlspecialchars($purchase['reference'] ?: '—') ?></span></div>
     <div><span class="report-k">Prepared by</span><span class="report-v"><?= htmlspecialchars($purchase['created_by_name'] ?? '—') ?></span></div>
   </div>
+  <?php if (!empty($purchase['notes'])): ?>
+  <p style="margin-top:12px;font-size:13px;color:var(--text-300);"><?= nl2br(htmlspecialchars($purchase['notes'])) ?></p>
+  <?php endif; ?>
   <?php if (can('purchases.manage')): ?>
   <div class="form-actions" style="padding-top:8px;">
     <?php if (in_array($purchase['status'], ['draft','pending_approval'], true)): ?>
@@ -583,15 +809,36 @@ document.querySelectorAll('.item-row').forEach(row => syncExpiryField(row, false
 </div>
 
 <div class="card mb-20">
-  <div class="card-header"><span class="card-title">Items</span></div>
+  <div class="card-header"><span class="card-title">Purchased Medications</span></div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Product</th><th>Batch</th><th>Expiry</th><th>Qty</th><th>Free</th><th>Buy</th><th>Sell</th><th>Disc %</th><th>Tax %</th><th>Total</th></tr></thead>
+      <thead>
+        <tr>
+          <th>Medication</th>
+          <th>Generic</th>
+          <th>Category</th>
+          <th>Unit</th>
+          <th>Batch</th>
+          <th>Mfg</th>
+          <th>Expiry</th>
+          <th>Qty</th>
+          <th>Free</th>
+          <th>Buy</th>
+          <th>Sell</th>
+          <th>Disc %</th>
+          <th>Tax %</th>
+          <th>Total</th>
+        </tr>
+      </thead>
       <tbody>
       <?php foreach ($items as $it): ?>
       <tr>
         <td style="font-weight:600;"><?= htmlspecialchars($it['med_name']) ?></td>
+        <td><?= htmlspecialchars($it['generic_name'] ?: '—') ?></td>
+        <td><?= htmlspecialchars($it['category_name'] ?: '—') ?></td>
+        <td><?= htmlspecialchars($it['unit'] ?: '—') ?></td>
         <td><code><?= htmlspecialchars($it['batch_number']) ?></code></td>
+        <td><?= !empty($it['manufacturing_date']) ? htmlspecialchars($it['manufacturing_date']) : '—' ?></td>
         <td><?= formatExpiryDate($it['expiry_date']) ?></td>
         <td><?= (int)$it['quantity'] ?></td>
         <td><?= (int)($it['free_quantity'] ?? 0) ?></td>
@@ -604,6 +851,15 @@ document.querySelectorAll('.item-row').forEach(row => syncExpiryField(row, false
       <?php endforeach; ?>
       </tbody>
     </table>
+  </div>
+  <div class="report-summary-grid" style="margin-top:16px;">
+    <div><span class="report-k">Subtotal</span><span class="report-v"><?= currency((float)($purchase['subtotal'] ?? $grand)) ?></span></div>
+    <div><span class="report-k">Invoice Discount</span><span class="report-v"><?= currency((float)($purchase['discount'] ?? 0)) ?></span></div>
+    <div><span class="report-k">Tax</span><span class="report-v"><?= currency((float)($purchase['tax'] ?? 0)) ?></span></div>
+    <div><span class="report-k">Grand Total</span><span class="report-v"><?= currency($grand) ?></span></div>
+    <div><span class="report-k">Amount Paid</span><span class="report-v" style="color:var(--accent2);"><?= currency($paid) ?></span></div>
+    <div><span class="report-k">Returned</span><span class="report-v"><?= currency($returned) ?></span></div>
+    <div><span class="report-k">Supplier Balance Due</span><span class="report-v" style="color:var(--warning);"><?= currency($due) ?></span></div>
   </div>
 </div>
 
