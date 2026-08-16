@@ -45,6 +45,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             }
             exit;
         }
+        if ($act === 'quick_category') {
+            if (!can('purchases.manage')) {
+                throw new RuntimeException('You do not have permission to manage categories.');
+            }
+            header('Content-Type: application/json');
+            try {
+                $cat = quickCreateCategory($pdo, $_POST);
+                echo json_encode(['ok' => true, 'category' => $cat], JSON_UNESCAPED_UNICODE);
+            } catch (Throwable $e) {
+                echo json_encode(['ok' => false, 'error' => $e->getMessage()], JSON_UNESCAPED_UNICODE);
+            }
+            exit;
+        }
         if (!can('purchases.manage')) {
             throw new RuntimeException('You do not have permission to manage purchases.');
         }
@@ -56,8 +69,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             exit;
         }
         if ($act === 'receive') {
-            receivePurchase($pdo, (int)$_POST['id'], $userId);
+            receivePurchase($pdo, (int)$_POST['id'], $userId, $_POST);
             flashSet('success', 'Purchase received and stock updated.');
+            header('Location: purchases.php?action=view&id=' . (int)$_POST['id']);
+            exit;
+        }
+        if ($act === 'save_draft_edit') {
+            updateDraftPurchase($pdo, (int)$_POST['id'], $_POST);
+            flashSet('success', 'Draft updated. Selling prices saved.');
             header('Location: purchases.php?action=view&id=' . (int)$_POST['id']);
             exit;
         }
@@ -91,7 +110,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } catch (Throwable $e) {
         $error = $e->getMessage();
         if ($act === 'save_purchase') $action = 'add';
-        elseif (in_array($act, ['pay', 'return', 'receive', 'cancel'], true)) {
+        elseif (in_array($act, ['pay', 'return', 'receive', 'save_draft_edit', 'cancel'], true)) {
             $action = 'view';
             $id = (int)($_POST['id'] ?? $id);
         }
@@ -110,9 +129,14 @@ $medicines = $pdo->query("
     LEFT JOIN categories c ON c.id = m.category_id
     ORDER BY m.name COLLATE NOCASE
 ")->fetchAll();
-$categories = $pdo->query("SELECT id, name FROM categories ORDER BY name")->fetchAll();
-$taxDefault = (float)getSetting('tax_rate', '0');
-
+$categories = $pdo->query("SELECT id, name, COALESCE(product_type,'medicine') AS product_type FROM categories ORDER BY name")->fetchAll();
+$categoriesByType = ['medicine' => [], 'cosmetic' => [], 'equipment' => []];
+foreach ($categories as $c) {
+    $ct = $c['product_type'] ?? 'medicine';
+    if (isset($categoriesByType[$ct])) {
+        $categoriesByType[$ct][] = ['id' => (int)$c['id'], 'name' => $c['name']];
+    }
+}
 $purchase = null;
 $items = [];
 $payments = [];
@@ -244,11 +268,11 @@ renderSidebar();
           <div class="purchase-item-section">
             <div class="purchase-section-label">1. Product</div>
             <div class="form-group pg-wide">
-              <label>Search product (brand, generic, SKU, barcode)</label>
+              <label>Search product (brand, generic)</label>
               <div class="product-picker">
                 <input type="hidden" name="medicine_id[]" class="product-id" value="">
                 <input type="hidden" name="product_code[]" class="product-code">
-                <input type="text" class="product-search" placeholder="Search brand, generic, SKU, or barcode…" autocomplete="off"
+                <input type="text" class="product-search" placeholder="Search brand or generic…" autocomplete="off"
                        onfocus="openProductPicker(this)" oninput="filterProductPicker(this)" onkeydown="productPickerKey(event)">
                 <button type="button" class="product-scan" onclick="this.parentElement.querySelector('.product-search').focus()" title="Scan barcode (focus for scanner)"><i data-lucide="scan-line"></i></button>
                 <div class="product-picker-list" hidden></div>
@@ -259,7 +283,7 @@ renderSidebar();
                 <label class="lbl-brand">Brand Name</label>
                 <input type="text" class="med-brand" readonly tabindex="-1" placeholder="—">
               </div>
-              <div class="form-group">
+              <div class="form-group f-generic">
                 <label class="lbl-generic">Generic Name</label>
                 <input type="text" class="med-generic" readonly tabindex="-1" placeholder="—">
               </div>
@@ -271,18 +295,10 @@ renderSidebar();
                 <label class="lbl-category">Category</label>
                 <input type="text" class="med-category" readonly tabindex="-1" placeholder="—">
               </div>
-              <div class="form-group">
-                <label>SKU</label>
-                <input type="text" class="med-sku" readonly tabindex="-1" placeholder="—">
-              </div>
-              <div class="form-group">
-                <label>Barcode</label>
-                <input type="text" class="med-barcode" readonly tabindex="-1" placeholder="—">
-              </div>
             </div>
           </div>
 
-          <div class="purchase-item-section">
+          <div class="purchase-item-section purchase-batch-section">
             <div class="purchase-section-label batch-section-label">2. Batch Information</div>
             <div class="purchase-batch-fields">
               <div class="form-group f-variant">
@@ -290,7 +306,7 @@ renderSidebar();
                 <input type="text" name="variant[]" class="variant-input" placeholder="e.g. Shade 20, 50 ml">
               </div>
               <div class="form-group f-batch">
-                <label>Batch Number</label>
+                <label>Batch Number <span class="batch-hint" style="color:var(--text-300);font-weight:400;"></span></label>
                 <input type="text" name="batch_number[]" class="batch-number" placeholder="Batch #">
               </div>
               <div class="form-group f-mfg">
@@ -300,22 +316,6 @@ renderSidebar();
               <div class="form-group f-expiry">
                 <label>Expiry Date <span class="expiry-hint" style="color:var(--text-300);font-weight:400;"></span></label>
                 <input type="date" name="expiry_date[]" class="expiry-input" onchange="warnExpiry(this)">
-              </div>
-              <div class="form-group f-model">
-                <label>Model Number</label>
-                <input type="text" name="model_number[]" class="model-input" placeholder="e.g. DT-200">
-              </div>
-              <div class="form-group f-serial">
-                <label>Serial Number <span style="color:var(--text-300);font-weight:400;">(if applicable)</span></label>
-                <input type="text" name="serial_number[]" class="serial-input" placeholder="Serial #">
-              </div>
-              <div class="form-group f-warranty-period">
-                <label>Warranty Period <span style="color:var(--text-300);font-weight:400;">(if applicable)</span></label>
-                <input type="text" name="warranty_period[]" class="warranty-period-input" placeholder="e.g. 1 year">
-              </div>
-              <div class="form-group f-warranty-expiry">
-                <label>Warranty Expiry <span style="color:var(--text-300);font-weight:400;">(if applicable)</span></label>
-                <input type="date" name="warranty_expiry[]" class="warranty-expiry-input">
               </div>
             </div>
           </div>
@@ -332,23 +332,15 @@ renderSidebar();
                 <input type="number" name="purchase_price[]" min="0" step="0.01" value="0" oninput="recalc()">
               </div>
               <div class="form-group">
-                <label>Selling Price <span style="color:var(--text-300);font-weight:400;">(batch)</span></label>
-                <input type="number" name="selling_price[]" min="0" step="0.01" value="0" oninput="recalc()">
-              </div>
-              <div class="form-group">
-                <label>Disc %</label>
-                <input type="number" name="line_discount[]" min="0" step="0.01" value="0" oninput="recalc()">
-              </div>
-              <div class="form-group">
-                <label>Tax %</label>
-                <input type="number" name="line_tax[]" min="0" step="0.01" value="<?= htmlspecialchars((string)$taxDefault) ?>" oninput="recalc()">
+                <label>Selling Price <span style="color:var(--text-300);font-weight:400;">(owner, required to receive)</span></label>
+                <input type="number" name="selling_price[]" min="0" step="0.01" value="" placeholder="Owner enters" oninput="recalc()">
               </div>
               <div class="form-group">
                 <label>Item Total</label>
                 <div class="purchase-item-total line-total">0.00</div>
               </div>
             </div>
-            <p class="purchase-line-note">Item total = quantity × purchase price. Stock received equals the entered quantity. Selling price is stored on this batch.</p>
+            <p class="purchase-line-note">Item total = quantity × purchase price. Stock received equals the entered quantity. Selling price is stored on this batch — it can be left empty to save a draft for owner review.</p>
           </div>
         </div>
         <div class="purchase-add-footer">
@@ -388,21 +380,8 @@ renderSidebar();
     </div>
     <div class="card">
       <div class="card-header"><span class="card-title">Summary</span></div>
-      <div class="form-row">
-        <div class="form-group">
-          <label>Invoice Discount</label>
-          <input type="number" name="header_discount" id="headerDiscount" min="0" step="0.01" value="0" oninput="recalc()">
-        </div>
-        <div class="form-group">
-          <label>Invoice Tax</label>
-          <input type="number" name="header_tax" id="headerTax" min="0" step="0.01" value="0" oninput="recalc()">
-        </div>
-      </div>
       <div class="report-summary-grid purchase-summary-grid">
         <div><span class="report-k">Subtotal</span><span class="report-v" id="sumSub">0.00</span></div>
-        <div><span class="report-k">Item Discounts</span><span class="report-v" id="sumItemDisc">0.00</span></div>
-        <div><span class="report-k">Invoice Discount</span><span class="report-v" id="sumInvDisc">0.00</span></div>
-        <div><span class="report-k">Tax</span><span class="report-v" id="sumTax">0.00</span></div>
         <div><span class="report-k">Grand Total</span><span class="report-v" id="sumGrand">0.00</span></div>
         <div><span class="report-k">Amount Paid</span><span class="report-v" id="sumPaid">0.00</span></div>
         <div><span class="report-k">Supplier Credit / Balance Due</span><span class="report-v" id="sumDue" style="color:var(--warning);">0.00</span></div>
@@ -455,13 +434,13 @@ renderSidebar();
           <input type="text" name="name" required placeholder="e.g. Nivea Cream 50ml">
         </div>
         <div class="form-group">
-          <label>Category</label>
-          <select name="category_id">
-            <option value="">— Select Category —</option>
-            <?php foreach ($categories as $c): ?>
-            <option value="<?= $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option>
-            <?php endforeach; ?>
-          </select>
+          <label>Category <span id="npCatType" style="color:var(--text-300);font-weight:400;"></span></label>
+          <div style="display:flex;gap:8px;">
+            <select name="category_id" id="npCategory" style="flex:1;">
+              <option value="">— Select Category —</option>
+            </select>
+            <button type="button" class="btn btn-ghost" onclick="openNewCatModal()" title="Add a category for this product type">+ Add Category</button>
+          </div>
         </div>
         <div class="form-row">
           <div class="form-group">
@@ -486,6 +465,26 @@ renderSidebar();
         <div class="form-actions" style="margin-top:16px;padding-top:16px;">
           <button type="submit" class="btn btn-primary">Create &amp; Select</button>
           <button type="button" class="btn btn-ghost" onclick="closeModal('newProductModal')">Close</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="newCatModal">
+  <div class="modal" style="max-width:400px;">
+    <div class="modal-header"><h2>Add <span id="ncType">Medication</span> Category</h2><button class="modal-close" onclick="closeModal('newCatModal')"><i data-lucide="x"></i></button></div>
+    <div class="modal-body">
+      <form id="ncForm" onsubmit="submitNewCategory(event)">
+        <div id="ncError" class="alert alert-danger" hidden style="margin:0 0 12px;"></div>
+        <div class="form-group">
+          <label>Category Name *</label>
+          <input type="text" name="name" required placeholder="e.g. Baby Care">
+        </div>
+        <p style="font-size:12px;color:var(--text-300);margin:0 0 4px;">Saved permanently and available only under <strong id="ncScope">Medication</strong> — it will not appear for other product types.</p>
+        <div class="form-actions" style="margin-top:16px;padding-top:16px;">
+          <button type="submit" class="btn btn-primary">Add Category</button>
+          <button type="button" class="btn btn-ghost" onclick="closeModal('newCatModal')">Close</button>
         </div>
       </form>
     </div>
@@ -532,12 +531,12 @@ const productCatalog = <?= json_encode(array_map(static function ($m) {
         'requiresExpiry' => productRequiresExpiry($type) ? 1 : 0,
     ];
 }, $medicines), JSON_UNESCAPED_UNICODE) ?>;
-const taxDefault = <?= json_encode((string)$taxDefault) ?>;
 const currencyLabel = <?= json_encode(getSetting('currency', 'ETB')) ?>;
+const categoriesByType = <?= json_encode($categoriesByType, JSON_UNESCAPED_UNICODE) ?>;
 const typeMeta = {
-  medicine:  { label: 'Medication', requiresExpiry: true,  placeholder: 'Search medication by brand, generic, SKU, or barcode…' },
-  cosmetic:  { label: 'Cosmetics',  requiresExpiry: false, placeholder: 'Search cosmetics by name, brand, SKU, or barcode…' },
-  equipment: { label: 'Equipment',  requiresExpiry: false, placeholder: 'Search equipment by name, brand, SKU, or barcode…' },
+  medicine:  { label: 'Medication', requiresExpiry: true,  placeholder: 'Search medication by brand or generic…' },
+  cosmetic:  { label: 'Cosmetics',  requiresExpiry: false, placeholder: 'Search cosmetics by name or brand…' },
+  equipment: { label: 'Equipment',  requiresExpiry: false, placeholder: 'Search equipment by name or brand…' },
 };
 
 function rowType(row) { return row.dataset.type || 'medicine'; }
@@ -565,8 +564,6 @@ function fillMedInfo(row, p) {
   row.querySelector('.med-generic').value = p ? (p.generic || '') : '';
   row.querySelector('.med-unit').value = p ? (p.unit || '') : '';
   row.querySelector('.med-category').value = p ? (p.category || '') : '';
-  row.querySelector('.med-sku').value = p ? (p.sku || '') : '';
-  row.querySelector('.med-barcode').value = p ? (p.barcode || '') : '';
 }
 
 function updateCardTitle(row) {
@@ -577,15 +574,17 @@ function updateCardTitle(row) {
 function syncLabels(row) {
   const t = rowType(row);
   const labels = {
-    medicine:  { brand: 'Brand Name', generic: 'Generic Name', category: 'Medication Category', sec: '2. Batch Information' },
-    cosmetic:  { brand: 'Product / Brand Name', generic: 'Manufacturer / Brand', category: 'Product Category', sec: '2. Batch & Variant' },
-    equipment: { brand: 'Equipment Name', generic: 'Brand', category: 'Equipment Category', sec: '2. Unit Details' },
+    medicine:  { brand: 'Brand Name', generic: 'Generic Name', category: 'Medication Category', sec: '2. Batch Information', batchHint: '(required)' },
+    cosmetic:  { brand: 'Product / Brand Name', generic: 'Manufacturer / Brand', category: 'Product Category', sec: '2. Batch & Variant', batchHint: '(auto-generate if supplier has none)' },
+    equipment: { brand: 'Equipment Name', generic: 'Brand', category: 'Equipment Category', sec: '2. Unit Details', batchHint: '' },
   }[t] || {};
   const set = (sel, v) => { const el = row.querySelector(sel); if (el) el.textContent = v; };
   set('.lbl-brand', labels.brand);
   set('.lbl-generic', labels.generic);
   set('.lbl-category', labels.category);
   set('.batch-section-label', labels.sec);
+  const bh = row.querySelector('.batch-hint');
+  if (bh) bh.textContent = labels.batchHint || '';
   const search = row.querySelector('.product-search');
   if (search) search.placeholder = typeMeta[t].placeholder;
 }
@@ -593,19 +592,21 @@ function syncLabels(row) {
 function syncTypeFields(row) {
   const t = rowType(row);
   const show = {
+    generic: t !== 'cosmetic',
     variant: t === 'cosmetic',
     batch: t !== 'equipment',
-    mfg: t !== 'equipment',
+    mfg: t === 'medicine',
     expiry: t !== 'equipment',
-    model: t === 'equipment',
-    serial: t === 'equipment',
-    'warranty-period': t === 'equipment',
-    'warranty-expiry': t === 'equipment',
   };
   row.querySelectorAll('.purchase-batch-fields > .form-group').forEach(g => {
     const key = [...g.classList].find(c => c.startsWith('f-'));
     if (key) g.style.display = show[key.slice(2)] ? '' : 'none';
   });
+  const gen = row.querySelector('.purchase-med-info > .f-generic');
+  if (gen) gen.style.display = show.generic ? '' : 'none';
+  // Equipment has no batch section at all — its reference number is auto-generated.
+  const sec = row.querySelector('.purchase-batch-section');
+  if (sec) sec.style.display = t === 'equipment' ? 'none' : '';
   const exp = row.querySelector('.expiry-input');
   if (exp) exp.required = typeMeta[t].requiresExpiry;
   warnExpiry(exp);
@@ -739,8 +740,8 @@ function selectProduct(picker, id) {
     const v = row.querySelector('.variant-input');
     if (v) v.focus();
   } else {
-    const m = row.querySelector('.model-input');
-    if (m) m.focus();
+    const q = row.querySelector('[name="purchase_price[]"]');
+    if (q) q.focus();
   }
 }
 function productPickerKey(e) {
@@ -780,15 +781,55 @@ document.addEventListener('click', e => {
 
 let newProductType = 'medicine';
 let newProductRow = null;
+function renderCategorySelect(type) {
+  const sel = document.getElementById('npCategory');
+  const label = typeMeta[type].label;
+  document.getElementById('npCatType').textContent = '(' + label + ' category only)';
+  sel.innerHTML = '<option value="">— Select Category —</option>'
+    + (categoriesByType[type] || []).map(c => `<option value="${c.id}">${escapeHtml(c.name)}</option>`).join('');
+}
 function openNewProductModal(type, btn) {
   newProductType = type;
   newProductRow = btn ? btn.closest('.item-row') : null;
   document.getElementById('npType').textContent = typeMeta[type].label;
   document.getElementById('npForm').reset();
+  renderCategorySelect(type);
   const err = document.getElementById('npError');
   err.hidden = true;
   err.textContent = '';
   openModal('newProductModal');
+}
+function openNewCatModal() {
+  const type = newProductType;
+  const label = typeMeta[type].label;
+  document.getElementById('ncType').textContent = label;
+  document.getElementById('ncScope').textContent = label;
+  document.getElementById('ncForm').reset();
+  const err = document.getElementById('ncError');
+  err.hidden = true;
+  err.textContent = '';
+  openModal('newCatModal');
+}
+function submitNewCategory(e) {
+  e.preventDefault();
+  const err = document.getElementById('ncError');
+  err.hidden = true;
+  err.textContent = '';
+  const fd = new FormData(document.getElementById('ncForm'));
+  fd.set('act', 'quick_category');
+  fd.set('product_type', newProductType);
+  fetch('purchases.php', { method: 'POST', body: fd })
+    .then(r => r.json())
+    .then(res => {
+      if (!res.ok) { err.textContent = res.error || 'Could not add the category.'; err.hidden = false; return; }
+      const c = res.category;
+      const list = categoriesByType[newProductType] || (categoriesByType[newProductType] = []);
+      if (!list.some(x => x.id === c.id)) list.push({ id: c.id, name: c.name });
+      renderCategorySelect(newProductType);
+      document.getElementById('npCategory').value = String(c.id);
+      closeModal('newCatModal');
+    })
+    .catch(() => { err.textContent = 'Could not save. Check your connection and try again.'; err.hidden = false; });
 }
 function submitNewProduct(e) {
   e.preventDefault();
@@ -824,37 +865,20 @@ function submitNewProduct(e) {
 function lineAmounts(row) {
   const qty = parseFloat(row.querySelector('[name="quantity[]"]').value) || 0;
   const price = parseFloat(row.querySelector('[name="purchase_price[]"]').value) || 0;
-  const disc = parseFloat(row.querySelector('[name="line_discount[]"]').value) || 0;
-  const tax = parseFloat(row.querySelector('[name="line_tax[]"]').value) || 0;
   const gross = qty * price;
-  const discountAmt = gross * disc / 100;
-  const net = gross - discountAmt;
-  const taxAmt = net * tax / 100;
-  return { gross, discountAmt, taxAmt, total: net + taxAmt, qty, price };
+  return { gross, total: gross, qty, price };
 }
 function recalc() {
-  let subGross = 0;
-  let itemDisc = 0;
-  let itemTax = 0;
   let subNet = 0;
   document.querySelectorAll('.item-row').forEach(row => {
     const a = lineAmounts(row);
-    subGross += a.gross;
-    itemDisc += a.discountAmt;
-    itemTax += a.taxAmt;
     subNet += a.total;
     row.querySelector('.line-total').textContent = a.total.toFixed(2);
     const summary = row.querySelector('.purchase-card-summary');
     if (summary && !summary.hidden) summary.innerHTML = buildCardSummary(row);
   });
-  const invDisc = parseFloat(document.getElementById('headerDiscount').value) || 0;
-  const invTax = parseFloat(document.getElementById('headerTax').value) || 0;
-  const grand = Math.max(0, subNet - invDisc + invTax);
-  document.getElementById('sumSub').textContent = subGross.toFixed(2);
-  document.getElementById('sumItemDisc').textContent = itemDisc.toFixed(2);
-  document.getElementById('sumInvDisc').textContent = invDisc.toFixed(2);
-  document.getElementById('sumTax').textContent = (itemTax + invTax).toFixed(2);
-  document.getElementById('sumGrand').textContent = grand.toFixed(2);
+  document.getElementById('sumSub').textContent = subNet.toFixed(2);
+  document.getElementById('sumGrand').textContent = subNet.toFixed(2);
   syncPaymentType();
 }
 function syncPaymentType() {
@@ -872,8 +896,7 @@ document.getElementById('amountPaid').addEventListener('input', syncPaymentType)
 function resetRowFields(row, opts = {}) {
   row.querySelectorAll('input').forEach(i => {
     if (i.classList.contains('med-brand') || i.classList.contains('med-generic')
-        || i.classList.contains('med-unit') || i.classList.contains('med-category')
-        || i.classList.contains('med-sku') || i.classList.contains('med-barcode')) {
+        || i.classList.contains('med-unit') || i.classList.contains('med-category')) {
       if (!opts.keepMedicine) i.value = '';
       return;
     }
@@ -886,8 +909,6 @@ function resetRowFields(row, opts = {}) {
       if (!opts.keepMedicine) i.value = '';
     }
   });
-  const tax = row.querySelector('[name="line_tax[]"]');
-  if (tax) tax.value = taxDefault;
   const list = row.querySelector('.product-picker-list');
   if (list) { list.hidden = true; list.innerHTML = ''; }
   const summary = row.querySelector('.purchase-card-summary');
@@ -907,13 +928,8 @@ function buildCardSummary(row) {
   const t = rowType(row);
   const val = sel => { const el = row.querySelector(sel); return el ? (el.value || '').trim() : ''; };
   const parts = [];
-  if (t !== 'equipment') {
-    const batch = val('[name="batch_number[]"]');
-    if (batch) parts.push('Batch: ' + escapeHtml(batch));
-  } else {
-    const serial = val('[name="serial_number[]"]');
-    if (serial) parts.push('Serial: ' + escapeHtml(serial));
-  }
+  const batch = val('[name="batch_number[]"]');
+  if (batch) parts.push('Batch: ' + escapeHtml(batch));
   const variant = val('[name="variant[]"]');
   if (variant) parts.push('Variant: ' + escapeHtml(variant));
   const exp = val('[name="expiry_date[]"]');
@@ -921,7 +937,8 @@ function buildCardSummary(row) {
   const qty = parseFloat(val('[name="quantity[]"]')) || 0;
   parts.push('Qty: ' + qty);
   parts.push('Buy: ' + fmtMoney(parseFloat(val('[name="purchase_price[]"]')) || 0));
-  parts.push('Sell: ' + fmtMoney(parseFloat(val('[name="selling_price[]"]')) || 0));
+  const sell = parseFloat(val('[name="selling_price[]"]')) || 0;
+  parts.push('Sell: ' + (sell > 0.009 ? fmtMoney(sell) : '<span style="color:var(--warning);">pending owner</span>'));
   parts.push('Total: ' + fmtMoney(lineAmounts(row).total));
   return `<div class="card-summary-line"><strong>${escapeHtml(p ? p.name : 'Select Product…')}</strong><span class="card-summary-meta">${parts.join(' · ')}</span></div>`;
 }
@@ -1013,8 +1030,8 @@ function addBatchOfSame(btn) {
     const b = row.querySelector('.batch-number');
     if (b) b.focus();
   } else {
-    const m = row.querySelector('.model-input');
-    if (m) m.focus();
+    const q = row.querySelector('[name="purchase_price[]"]');
+    if (q) q.focus();
   }
   if (window.lucide) lucide.createIcons();
   hideValidate();
@@ -1049,6 +1066,7 @@ function hideValidate() {
 function validatePurchaseForm() {
   hideValidate();
   const purchaseDate = document.getElementById('purchaseDate').value;
+  const isDraft = document.getElementById('saveIntent').value === 'draft';
   const seen = new Map();
   const rows = [...document.querySelectorAll('.item-row')];
   let hasLine = false;
@@ -1080,12 +1098,17 @@ function validatePurchaseForm() {
       showValidate(`Line ${n}: enter a valid purchase price.`);
       return false;
     }
-    if (!(sell >= 0) || Number.isNaN(sell)) {
-      showValidate(`Line ${n}: enter a valid selling price for this batch.`);
+    if (isDraft) {
+      if (sell < 0) {
+        showValidate(`Line ${n}: selling price cannot be negative.`);
+        return false;
+      }
+    } else if (!(sell > 0)) {
+      showValidate(`Line ${n}: enter the selling price for this batch — it is required to receive. You can leave it empty and save as a draft instead.`);
       return false;
     }
-    if (t !== 'equipment' && !batch) {
-      showValidate(`Line ${n}: enter a batch number.`);
+    if (t === 'medicine' && !batch) {
+      showValidate(`Line ${n}: enter a batch number for this medication.`);
       return false;
     }
     if (t === 'medicine' && !expiry) {
@@ -1140,7 +1163,9 @@ recalc();
 </script>
 
 <?php elseif ($action === 'view' && $purchase):
-  $disp = purchaseDisplayStatus($purchase);
+  $isDraft = in_array($purchase['status'], ['draft', 'pending_approval'], true);
+  $needsReview = $isDraft && purchaseNeedsSellingReview($pdo, (int)$purchase['id']);
+  $disp = purchaseDisplayStatus($purchase, $needsReview);
   $grand = (float)($purchase['grand_total'] ?? $purchase['total_amount']);
   $paid = (float)$purchase['total_paid'];
   $returned = (float)($purchase['total_returned'] ?? 0);
@@ -1153,6 +1178,13 @@ recalc();
   <a href="suppliers.php?id=<?= $purchase['supplier_id'] ?>" class="btn btn-ghost btn-sm"><i data-lucide="truck"></i> Supplier</a>
   <?php endif; ?>
 </div>
+
+<?php if ($needsReview): ?>
+<div class="alert alert-warning mb-20" style="display:flex;align-items:flex-start;gap:8px;">
+  <i data-lucide="user-check" style="margin-top:2px;"></i>
+  <div><strong>PENDING OWNER REVIEW — SELLING PRICE PENDING.</strong> One or more products have no selling price yet. Enter the selling prices in the table below, then press <strong>Save &amp; Receive</strong> to finalize the purchase and update inventory.</div>
+</div>
+<?php endif; ?>
 
 <div class="card mb-20">
   <div class="card-header">
@@ -1174,7 +1206,7 @@ recalc();
   <?php endif; ?>
   <?php if (can('purchases.manage')): ?>
   <div class="form-actions" style="padding-top:8px;">
-    <?php if (in_array($purchase['status'], ['draft','pending_approval'], true)): ?>
+    <?php if ($isDraft && !$needsReview): ?>
     <form method="POST"><input type="hidden" name="act" value="receive"><input type="hidden" name="id" value="<?= $purchase['id'] ?>">
       <button class="btn btn-success">Receive into Inventory</button></form>
     <?php endif; ?>
@@ -1194,6 +1226,7 @@ recalc();
 
 <div class="card mb-20">
   <div class="card-header"><span class="card-title">Purchased Products</span></div>
+  <?php if ($isDraft): ?><form method="POST" id="draftReviewForm"><input type="hidden" name="id" value="<?= $purchase['id'] ?>"><?php endif; ?>
   <div class="table-wrap">
     <table>
       <thead>
@@ -1208,10 +1241,7 @@ recalc();
           <th>Qty</th>
           <th>Variant / Model / Serial</th>
           <th>Buy</th>
-          <th>Sell</th>
-          <th>Disc %</th>
-          <th>Tax %</th>
-          <th>Warranty</th>
+          <th>Sell <?= $isDraft ? '<span style="font-weight:400;color:var(--text-300);">(owner)</span>' : '' ?></th>
           <th>Total</th>
         </tr>
       </thead>
@@ -1221,9 +1251,6 @@ recalc();
         $itTypeLabel = productTypes()[$itType] ?? ucfirst($itType);
         $variantInfo = trim(implode(' · ', array_filter([
             $it['variant'] ?? '', $it['model_number'] ?? '', $it['serial_number'] ?? '',
-        ], fn($v) => $v !== '' && $v !== null)));
-        $warranty = trim(implode(' · ', array_filter([
-            $it['warranty_period'] ?? '', !empty($it['warranty_expiry']) ? ('until ' . $it['warranty_expiry']) : '',
         ], fn($v) => $v !== '' && $v !== null)));
       ?>
       <tr>
@@ -1237,16 +1264,28 @@ recalc();
         <td><?= (int)$it['quantity'] ?></td>
         <td style="font-size:12px;"><?= $variantInfo !== '' ? htmlspecialchars($variantInfo) : '—' ?></td>
         <td><?= currency((float)$it['purchase_price']) ?></td>
+        <?php if ($isDraft):
+          $sellVal = number_format((float)$it['selling_price'], 2, '.', '');
+          $sellPending = (float)$it['selling_price'] <= 0.009;
+        ?>
+        <td><input type="number" name="selling_price[<?= (int)$it['id'] ?>]" min="0" step="0.01" value="<?= htmlspecialchars($sellVal) ?>" style="<?= inputStyle(120) . ($sellPending ? 'background:var(--warning-glow);border-color:rgba(217,119,6,0.4);' : '') ?>" placeholder="0.00"></td>
+        <?php else: ?>
         <td><?= currency((float)$it['selling_price']) ?></td>
-        <td><?= number_format((float)($it['discount'] ?? 0), 1) ?></td>
-        <td><?= number_format((float)($it['tax'] ?? 0), 1) ?></td>
-        <td style="font-size:12px;"><?= $warranty !== '' ? htmlspecialchars($warranty) : '—' ?></td>
+        <?php endif; ?>
         <td style="font-weight:700;"><?= currency((float)($it['line_total'] ?: $it['quantity'] * $it['purchase_price'])) ?></td>
       </tr>
       <?php endforeach; ?>
       </tbody>
     </table>
   </div>
+  <?php if ($isDraft): ?>
+  <div class="form-actions" style="padding:12px 16px;border-top:1px solid var(--border);">
+    <button type="submit" name="act" value="save_draft_edit" class="btn btn-primary">Save Selling Prices</button>
+    <button type="submit" name="act" value="receive" class="btn btn-success">Save &amp; Receive</button>
+    <span style="font-size:12px;color:var(--text-300);">Save keeps the draft for later. Save &amp; Receive validates all required information and updates inventory.</span>
+  </div>
+  </form>
+  <?php endif; ?>
   <div class="report-summary-grid" style="margin-top:16px;">
     <div><span class="report-k">Subtotal</span><span class="report-v"><?= currency((float)($purchase['subtotal'] ?? $grand)) ?></span></div>
     <div><span class="report-k">Invoice Discount</span><span class="report-v"><?= currency((float)($purchase['discount'] ?? 0)) ?></span></div>
@@ -1435,7 +1474,7 @@ recalc();
       <?php if (!$list['rows']): ?>
         <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-300);">No purchases yet</td></tr>
       <?php else: foreach ($list['rows'] as $p):
-        $d = purchaseDisplayStatus($p);
+        $d = purchaseDisplayStatus($p, (int)($p['missing_sell'] ?? 0) > 0);
         $g = (float)($p['grand_total'] ?? $p['total_amount']);
         $pd = (float)$p['total_paid'];
         $du = purchaseOutstanding($p);

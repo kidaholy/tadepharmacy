@@ -93,11 +93,17 @@ function recalcPurchasePaymentStatus(PDO $pdo, int $purchaseId): void {
         ->execute([$status, $due, $purchaseId]);
 }
 
-function purchaseDisplayStatus(array $p): array {
+function purchaseDisplayStatus(array $p, bool $needsReview = false): array {
     $wf = $p['status'] ?? 'received';
     if ($wf === 'cancelled') return ['cancelled', 'Cancelled', 'badge-gray'];
-    if ($wf === 'draft') return ['draft', 'Draft', 'badge-gray'];
-    if ($wf === 'pending_approval') return ['pending', 'Pending Approval', 'badge-orange'];
+    if ($wf === 'draft') {
+        if ($needsReview) return ['draft_review', 'Draft · Pending Owner Review', 'badge-orange'];
+        return ['draft', 'Draft', 'badge-gray'];
+    }
+    if ($wf === 'pending_approval') {
+        if ($needsReview) return ['pending_review', 'Pending Approval · Selling Price Pending', 'badge-orange'];
+        return ['pending', 'Pending Approval', 'badge-orange'];
+    }
 
     $due = purchaseOutstanding($p);
     $pay = $p['payment_status'] ?? 'unpaid';
@@ -152,6 +158,35 @@ function nextReturnNumber(PDO $pdo): string {
     return $prefix . str_pad((string)$n, 6, '0', STR_PAD_LEFT);
 }
 
+/**
+ * Generate a unique internal batch/reference number when the supplier did not
+ * provide one, e.g. "COS-260816-001" for cosmetics and "EQP-260816-001" for
+ * equipment. Scans both live batches and saved purchase lines (drafts) so the
+ * number is unique across inventory and purchase history, and is never reused.
+ */
+function nextInternalBatchNumber(PDO $pdo, string $prefix): string {
+    $prefix = strtoupper(trim($prefix));
+    $base = $prefix . '-' . date('ymd') . '-';
+    $max = 0;
+    foreach (['batches', 'purchase_items'] as $table) {
+        $st = $pdo->prepare("SELECT batch_number FROM {$table} WHERE batch_number LIKE ?");
+        $st->execute([$base . '%']);
+        foreach ($st->fetchAll(PDO::FETCH_COLUMN) as $bn) {
+            if (preg_match('/(\d+)$/', (string)$bn, $m)) {
+                $max = max($max, (int)$m[1]);
+            }
+        }
+    }
+    return $base . str_pad((string)($max + 1), 3, '0', STR_PAD_LEFT);
+}
+
+/** True when any saved line of the purchase is still missing a selling price. */
+function purchaseNeedsSellingReview(PDO $pdo, int $purchaseId): bool {
+    $st = $pdo->prepare("SELECT COUNT(*) FROM purchase_items WHERE purchase_id=? AND COALESCE(selling_price,0) <= 0.009");
+    $st->execute([$purchaseId]);
+    return (int)$st->fetchColumn() > 0;
+}
+
 function saveSupplier(PDO $pdo, array $data, int $id = 0): int {
     $name = trim($data['name'] ?? '');
     if ($name === '') {
@@ -199,13 +234,9 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
     $qtys = $post['quantity'] ?? [];
     $pprices = $post['purchase_price'] ?? [];
     $sprices = $post['selling_price'] ?? [];
-    $discs = $post['line_discount'] ?? [];
-    $taxes = $post['line_tax'] ?? [];
     $variants = $post['variant'] ?? [];
     $models = $post['model_number'] ?? [];
     $serials = $post['serial_number'] ?? [];
-    $warrantyPeriods = $post['warranty_period'] ?? [];
-    $warrantyExps = $post['warranty_expiry'] ?? [];
     $purchaseDate = trim($post['purchase_date'] ?? '') ?: businessToday();
 
     $ids = array_values(array_unique(array_filter(array_map('intval', $meds))));
@@ -240,9 +271,14 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
         }
         $type = $typeMap[$mid];
 
-        if ($type === 'equipment' && $batch === '') {
-            // Equipment has no batch number: identify the batch by serial number or an auto-generated code.
-            $batch = $serial !== '' ? $serial : ('EQ-' . strtoupper(bin2hex(random_bytes(3))));
+        if ($type === 'equipment') {
+            // Equipment has no batch fields in the form — always generate a unique
+            // internal reference number (EQP-...) for inventory tracking.
+            if ($batch === '') $batch = nextInternalBatchNumber($pdo, 'EQP');
+        } elseif ($type === 'cosmetic' && $batch === '') {
+            // Cosmetics: use the supplier batch when provided, otherwise generate a
+            // unique internal batch number (COS-...) that is saved permanently.
+            $batch = nextInternalBatchNumber($pdo, 'COS');
         }
         if ($qty <= 0) {
             throw new RuntimeException("Line {$lineNo}: quantity must be greater than 0.");
@@ -279,8 +315,10 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
         }
         $seenBatches[$batchKey] = true;
 
-        $disc = (float)($discs[$i] ?? 0);
-        $tax = (float)($taxes[$i] ?? 0);
+        // Discount & tax are kept at the invoice summary level only, so each line
+        // is simply quantity × purchase price.
+        $disc = 0.0;
+        $tax = 0.0;
         $amt = purchaseLineAmounts($qty, $price, $disc, $tax);
         $items[] = [
             'medicine_id'         => $mid,
@@ -299,8 +337,6 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
             'variant'             => $variant,
             'model_number'        => $model,
             'serial_number'       => $serial,
-            'warranty_period'     => trim($warrantyPeriods[$i] ?? ''),
-            'warranty_expiry'     => trim($warrantyExps[$i] ?? '') ?: null,
         ];
     }
     if (!$items) {
@@ -346,6 +382,19 @@ function createPurchase(PDO $pdo, array $post, int $userId): int {
         $status = 'pending_approval';
     } else {
         $status = 'received';
+    }
+
+    // When receiving directly from the entry screen, every line needs a selling
+    // price. Empty selling prices are only allowed for drafts pending owner review.
+    if ($status === 'received') {
+        foreach ($items as $it) {
+            if (!((float)$it['selling_price'] > 0.009)) {
+                throw new RuntimeException(
+                    "Selling price is required for \"{$it['medicine_name']}\" before receiving. "
+                    . 'Save as a draft instead and let the owner enter selling prices.'
+                );
+            }
+        }
     }
 
     $number = nextPurchaseNumber($pdo);
@@ -474,13 +523,42 @@ function receivePurchaseLine(PDO $pdo, int $purchaseId, ?int $supplierId, array 
     return (int)$pdo->lastInsertId();
 }
 
-function receivePurchase(PDO $pdo, int $purchaseId, int $userId): void {
+function receivePurchase(PDO $pdo, int $purchaseId, int $userId, array $post = []): void {
     $p = fetchPurchase($pdo, $purchaseId);
     if (!$p) throw new RuntimeException('Purchase not found.');
     if (!in_array($p['status'], ['draft', 'pending_approval'], true)) {
         throw new RuntimeException('This purchase has already been received.');
     }
     $items = fetchPurchaseItems($pdo, $purchaseId);
+
+    // Owner may enter selling prices on the draft review screen before receiving.
+    if (!empty($post['selling_price']) && is_array($post['selling_price'])) {
+        updateDraftSellingPrices($pdo, $purchaseId, $post['selling_price']);
+        $items = fetchPurchaseItems($pdo, $purchaseId);
+    }
+
+    // Validate everything before finalizing: selling price, quantity, purchase
+    // price, batch/reference and expiry (where applicable).
+    foreach ($items as $it) {
+        $label = $it['med_name'] ?? ('Line #' . $it['id']);
+        $type = $it['product_type'] ?? 'medicine';
+        if (!((float)$it['selling_price'] > 0.009)) {
+            throw new RuntimeException("Selling price is required for \"{$label}\" before receiving. Enter it on the draft review screen and save.");
+        }
+        if ((int)$it['quantity'] <= 0) {
+            throw new RuntimeException("Quantity for \"{$label}\" must be greater than 0.");
+        }
+        if (!((float)$it['purchase_price'] >= 0)) {
+            throw new RuntimeException("Purchase price for \"{$label}\" is invalid.");
+        }
+        if (trim((string)$it['batch_number']) === '') {
+            throw new RuntimeException("Batch/reference number is required for \"{$label}\" before receiving.");
+        }
+        if (productRequiresExpiry($type) && (trim((string)$it['expiry_date']) === '' || isNoExpiryDate($it['expiry_date']))) {
+            throw new RuntimeException("Expiry date is required for medicine \"{$label}\" before receiving.");
+        }
+    }
+
     $pdo->beginTransaction();
     try {
         $updItem = $pdo->prepare("UPDATE purchase_items SET batch_id=? WHERE id=?");
@@ -495,6 +573,39 @@ function receivePurchase(PDO $pdo, int $purchaseId, int $userId): void {
     } catch (Throwable $e) {
         $pdo->rollBack();
         throw $e;
+    }
+}
+
+/**
+ * Owner review: persist selling prices on a draft without receiving it.
+ * Only prices may be edited here — the rest of the draft stays as the worker entered it.
+ */
+function updateDraftPurchase(PDO $pdo, int $purchaseId, array $post): void {
+    $p = fetchPurchase($pdo, $purchaseId);
+    if (!$p) throw new RuntimeException('Purchase not found.');
+    if (!in_array($p['status'], ['draft', 'pending_approval'], true)) {
+        throw new RuntimeException('Only drafts can be edited this way.');
+    }
+    $sprices = $post['selling_price'] ?? [];
+    if (!is_array($sprices) || !$sprices) {
+        throw new RuntimeException('No selling prices to save.');
+    }
+    updateDraftSellingPrices($pdo, $purchaseId, $sprices);
+    $pdo->prepare("UPDATE purchases SET updated_at=datetime('now') WHERE id=?")->execute([$purchaseId]);
+    auditLog($pdo, 'update', 'purchase', $purchaseId, $p['purchase_number'] . ' selling prices updated');
+}
+
+/** Write selling_price per purchase item id (used by owner review + receiving). */
+function updateDraftSellingPrices(PDO $pdo, int $purchaseId, array $sprices): void {
+    $upd = $pdo->prepare("UPDATE purchase_items SET selling_price=? WHERE id=? AND purchase_id=?");
+    foreach ($sprices as $itemId => $val) {
+        $itemId = (int)$itemId;
+        if ($itemId <= 0) continue;
+        $price = (float)$val;
+        if ($price < 0) {
+            throw new RuntimeException('Selling price cannot be negative.');
+        }
+        $upd->execute([round($price, 2), $itemId, $purchaseId]);
     }
 }
 
@@ -825,7 +936,8 @@ function listPurchases(PDO $pdo, array $filters, int $page, int $perPage): array
     $offset = ($page - 1) * $perPage;
     $sql = "
         SELECT p.*, s.name AS supplier_name,
-          (SELECT COUNT(*) FROM purchase_items pi WHERE pi.purchase_id=p.id) AS items
+          (SELECT COUNT(*) FROM purchase_items pi WHERE pi.purchase_id=p.id) AS items,
+          (SELECT COUNT(*) FROM purchase_items pi2 WHERE pi2.purchase_id=p.id AND COALESCE(pi2.selling_price,0) <= 0.009) AS missing_sell
         FROM purchases p
         LEFT JOIN suppliers s ON s.id = p.supplier_id
         $whereSql
@@ -855,6 +967,14 @@ function quickCreateProduct(PDO $pdo, array $post): array {
     $sku = trim($post['sku'] ?? '');
     $barcode = trim($post['barcode'] ?? '');
     $categoryId = (int)($post['category_id'] ?? 0) ?: null;
+    if ($categoryId) {
+        $chk = $pdo->prepare("SELECT product_type FROM categories WHERE id=?");
+        $chk->execute([$categoryId]);
+        $catType = $chk->fetchColumn();
+        if ($catType !== false && $catType !== $type) {
+            $categoryId = null; // never mix categories between product types
+        }
+    }
 
     $dup = $pdo->prepare("SELECT id, name, COALESCE(product_type,'medicine') FROM medicines WHERE LOWER(name)=LOWER(?) LIMIT 1");
     $dup->execute([$name]);
@@ -891,4 +1011,30 @@ function quickCreateProduct(PDO $pdo, array $post): array {
     ");
     $st->execute([$newId]);
     return $st->fetch();
+}
+
+/**
+ * Quick-create a category that belongs to exactly one product type (medicine /
+ * cosmetic / equipment). Used by the "＋ Add Category" option on the purchase screen.
+ */
+function quickCreateCategory(PDO $pdo, array $post): array {
+    $name = trim($post['name'] ?? '');
+    $type = trim($post['product_type'] ?? 'medicine');
+    if (!isset(productTypes()[$type])) $type = 'medicine';
+    if ($name === '') {
+        throw new RuntimeException('Category name is required.');
+    }
+    $st = $pdo->prepare("SELECT id, name, product_type FROM categories WHERE LOWER(name)=LOWER(?)");
+    $st->execute([$name]);
+    $existing = $st->fetch();
+    if ($existing) {
+        if ((string)($existing['product_type'] ?? 'medicine') === $type) {
+            return $existing;
+        }
+        throw new RuntimeException("Category \"{$name}\" already exists under " . strtolower(productTypes()[$existing['product_type'] ?? 'medicine']) . ". Choose a different name.");
+    }
+    $pdo->prepare("INSERT INTO categories (name, product_type) VALUES (?,?)")->execute([$name, $type]);
+    $newId = (int)$pdo->lastInsertId();
+    auditLog($pdo, 'create', 'category', $newId, $name . ' (' . productTypes()[$type] . ')');
+    return ['id' => $newId, 'name' => $name, 'product_type' => $type];
 }

@@ -38,8 +38,14 @@ function getDB(): PDO {
         $pdo = new PDO('sqlite:' . DB_PATH);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+        // Durability & concurrency pragmas — explicit so behavior is stable
+        // regardless of PHP/driver defaults, across restarts and concurrent requests.
         $pdo->exec('PRAGMA journal_mode=WAL');
-        $pdo->exec('PRAGMA foreign_keys=ON');
+        $pdo->exec('PRAGMA synchronous=FULL');      // fsync on every commit: no lost transactions on power loss
+        $pdo->exec('PRAGMA foreign_keys=ON');       // enforce FKs per connection
+        $pdo->exec('PRAGMA busy_timeout=60000');    // wait up to 60s for a write lock instead of failing
+        $pdo->exec('PRAGMA wal_autocheckpoint=1000');
+        $pdo->exec('PRAGMA journal_size_limit=67108864'); // cap WAL growth at 64MB
         initDB($pdo);
     }
     return $pdo;
@@ -350,8 +356,24 @@ function initPurchaseModuleSchema(PDO $pdo): void {
         "ALTER TABLE purchase_items ADD COLUMN serial_number TEXT",
         "ALTER TABLE purchase_items ADD COLUMN warranty_period TEXT",
         "ALTER TABLE purchase_items ADD COLUMN warranty_expiry DATE",
+        "ALTER TABLE categories ADD COLUMN product_type TEXT DEFAULT 'medicine'",
     ] as $sql) {
         try { $pdo->exec($sql); } catch (PDOException $e) { /* already applied */ }
+    }
+
+    // Categories are kept separate per product type (Medicine / Cosmetics / Equipment).
+    // Backfill legacy categories by name, then seed the standard per-type lists.
+    $pdo->exec("UPDATE categories SET product_type='cosmetic' WHERE LOWER(name) LIKE '%cosmetic%'");
+    $pdo->exec("UPDATE categories SET product_type='equipment' WHERE LOWER(name) LIKE '%equipment%' OR LOWER(name) LIKE '%device%'");
+    $typeCat = $pdo->prepare("INSERT OR IGNORE INTO categories (name, product_type) VALUES (?,?)");
+    foreach (['Antibiotic', 'Analgesic', 'Antifungal', 'Antihypertensive', 'Antidiabetic', 'Vitamins & Supplements'] as $n) {
+        $typeCat->execute([$n, 'medicine']);
+    }
+    foreach (['Skincare', 'Haircare', 'Makeup', 'Body Care', 'Sunscreen', 'Cleansing'] as $n) {
+        $typeCat->execute([$n, 'cosmetic']);
+    }
+    foreach (['Diagnostic Equipment', 'Pharmacy Equipment', 'Medical Equipment', 'Storage Equipment'] as $n) {
+        $typeCat->execute([$n, 'equipment']);
     }
 
     $pdo->exec("
