@@ -514,6 +514,148 @@ textarea { resize: vertical; min-height: 90px; }
   justify-content: flex-start;
 }
 .purchase-summary-grid .report-k { font-size: 12px; }
+
+/* ─── Purchase collapsible cards ────────────────────────── */
+.purchase-card-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  cursor: pointer;
+  user-select: none;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.purchase-card-toggle {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-700);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  color: var(--text-200);
+  cursor: pointer;
+}
+.purchase-card-toggle:hover { color: var(--accent2); border-color: var(--accent2); }
+.purchase-card-title {
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--text-100);
+  flex: 1 1 auto;
+  min-width: 140px;
+}
+.purchase-card-title .card-index { color: var(--accent2); margin-right: 4px; }
+.purchase-card-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.purchase-card-summary { padding-top: 10px; }
+.card-summary-line {
+  font-size: 13px;
+  color: var(--text-100);
+  line-height: 1.5;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  align-items: baseline;
+}
+.card-summary-meta { color: var(--text-300); font-size: 12px; }
+.purchase-item.collapsed .purchase-card-body { display: none; }
+.purchase-item.collapsed { gap: 0; }
+.purchase-item.collapsed .purchase-add-footer { margin-top: 12px; }
+
+.purchase-type-pills {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 2px;
+}
+.purchase-type-pills .pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-700);
+  color: var(--text-200);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.purchase-type-pills .pill:hover { border-color: var(--accent2); color: var(--accent2); }
+.purchase-type-pills .pill.active {
+  background: var(--accent2-glow);
+  border-color: var(--accent2);
+  color: var(--accent2);
+}
+.purchase-type-pills .pill i { width: 14px; height: 14px; }
+
+.btn-add-product {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 14px 16px;
+  font-size: 16px;
+  font-weight: 800;
+  letter-spacing: 0.03em;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  border: none;
+}
+.purchase-add-footer { margin-top: 14px; display: flex; }
+.purchase-add-footer .btn-add-product { flex: 1; }
+
+.product-scan {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 30px;
+  height: 30px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--text-300);
+  cursor: pointer;
+}
+.product-scan:hover { color: var(--accent2); }
+.product-picker .product-search { padding-right: 38px; }
+
+.product-picker-new {
+  border-top: 1px solid var(--border);
+  padding: 6px;
+}
+.product-picker-new button {
+  width: 100%;
+  text-align: left;
+  padding: 8px 10px;
+  background: var(--accent2-glow);
+  color: var(--accent2);
+  border: 1px dashed rgba(2, 132, 199, 0.4);
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.product-picker-new button:hover { background: var(--accent2); color: #fff; }
+
+.expiry-hint { display: inline-block; font-size: 11px; }
+.expiry-warn-text { color: var(--warning); }
+.expiry-bad-text { color: var(--danger); }
+input.expiry-warn { border-color: var(--warning); }
+input.expiry-bad { border-color: var(--danger); }
+
+@media (max-width: 720px) {
+  .purchase-card-head { gap: 8px; }
+  .purchase-card-actions { width: 100%; justify-content: flex-end; }
+  .btn-add-product { font-size: 15px; padding: 13px 12px; }
+  .purchase-type-pills .pill { padding: 8px 12px; font-size: 12px; }
+}
 .product-picker { position: relative; }
 .product-picker-list {
   position: absolute;

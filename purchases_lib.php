@@ -197,11 +197,15 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
     $mfgs = $post['manufacturing_date'] ?? [];
     $exps = $post['expiry_date'] ?? [];
     $qtys = $post['quantity'] ?? [];
-    $frees = $post['free_quantity'] ?? [];
     $pprices = $post['purchase_price'] ?? [];
     $sprices = $post['selling_price'] ?? [];
     $discs = $post['line_discount'] ?? [];
     $taxes = $post['line_tax'] ?? [];
+    $variants = $post['variant'] ?? [];
+    $models = $post['model_number'] ?? [];
+    $serials = $post['serial_number'] ?? [];
+    $warrantyPeriods = $post['warranty_period'] ?? [];
+    $warrantyExps = $post['warranty_expiry'] ?? [];
     $purchaseDate = trim($post['purchase_date'] ?? '') ?: businessToday();
 
     $ids = array_values(array_unique(array_filter(array_map('intval', $meds))));
@@ -222,24 +226,31 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
     for ($i = 0; $i < count($meds); $i++) {
         $mid = (int)($meds[$i] ?? 0);
         $qty = (int)($qtys[$i] ?? 0);
-        $free = (int)($frees[$i] ?? 0);
         $batch = trim($batches[$i] ?? '');
+        $variant = trim($variants[$i] ?? '');
+        $model = trim($models[$i] ?? '');
+        $serial = trim($serials[$i] ?? '');
         $lineNo = $i + 1;
 
-        if ($mid <= 0 && $qty <= 0 && $free <= 0 && $batch === '') {
+        if ($mid <= 0 && $qty <= 0 && $batch === '') {
             continue;
         }
         if ($mid <= 0 || !isset($typeMap[$mid])) {
-            throw new RuntimeException("Line {$lineNo}: select a medication from the master list.");
+            throw new RuntimeException("Line {$lineNo}: select a product from the master list.");
         }
-        if ($qty <= 0 && $free <= 0) {
-            throw new RuntimeException("Line {$lineNo}: quantity must be greater than 0 (or enter free quantity).");
+        $type = $typeMap[$mid];
+
+        if ($type === 'equipment' && $batch === '') {
+            // Equipment has no batch number: identify the batch by serial number or an auto-generated code.
+            $batch = $serial !== '' ? $serial : ('EQ-' . strtoupper(bin2hex(random_bytes(3))));
+        }
+        if ($qty <= 0) {
+            throw new RuntimeException("Line {$lineNo}: quantity must be greater than 0.");
         }
         if ($batch === '') {
             throw new RuntimeException("Line {$lineNo}: batch number is required.");
         }
 
-        $type = $typeMap[$mid];
         $needExp = productRequiresExpiry($type);
         $expiryRaw = trim($exps[$i] ?? '');
         $expiry = normalizeExpiryDate($expiryRaw, $needExp);
@@ -259,9 +270,11 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
             throw new RuntimeException("Line {$lineNo}: selling price is invalid.");
         }
 
-        $batchKey = $mid . '|' . strtolower($batch);
+        // Batch identity includes the cosmetic variant / equipment model+serial so
+        // different variants or serialized units stay separate stock items.
+        $batchKey = $mid . '|' . strtolower($batch) . '|' . strtolower($variant) . '|' . strtolower($model) . '|' . strtolower($serial);
         if (isset($seenBatches[$batchKey])) {
-            $medLabel = $nameMap[$mid] ?? 'medication';
+            $medLabel = $nameMap[$mid] ?? 'product';
             throw new RuntimeException("Duplicate batch \"{$batch}\" for {$medLabel} on this invoice. Combine quantities or use a different batch number.");
         }
         $seenBatches[$batchKey] = true;
@@ -276,13 +289,18 @@ function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
             'manufacturing_date'  => trim($mfgs[$i] ?? '') ?: null,
             'expiry_date'         => $expiry,
             'quantity'            => $qty,
-            'free_quantity'       => max(0, $free),
+            'free_quantity'       => 0,
             'purchase_price'      => $price,
             'selling_price'       => $sell,
             'discount'            => $disc,
             'tax'                 => $tax,
             'line_total'          => $amt['total'],
             'medicine_name'       => $nameMap[$mid] ?? '',
+            'variant'             => $variant,
+            'model_number'        => $model,
+            'serial_number'       => $serial,
+            'warranty_period'     => trim($warrantyPeriods[$i] ?? ''),
+            'warranty_expiry'     => trim($warrantyExps[$i] ?? '') ?: null,
         ];
     }
     if (!$items) {
@@ -366,8 +384,9 @@ function createPurchase(PDO $pdo, array $post, int $userId): int {
         $insItem = $pdo->prepare("
             INSERT INTO purchase_items (
                 purchase_id, medicine_id, batch_id, batch_number, manufacturing_date, expiry_date,
-                quantity, free_quantity, purchase_price, selling_price, discount, tax, line_total
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                quantity, free_quantity, purchase_price, selling_price, discount, tax, line_total,
+                variant, model_number, serial_number, warranty_period, warranty_expiry
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ");
         foreach ($items as $it) {
             $batchId = null;
@@ -376,8 +395,10 @@ function createPurchase(PDO $pdo, array $post, int $userId): int {
             }
             $insItem->execute([
                 $purchaseId, $it['medicine_id'], $batchId, $it['batch_number'], $it['manufacturing_date'],
-                $it['expiry_date'], $it['quantity'], $it['free_quantity'], $it['purchase_price'],
+                $it['expiry_date'], $it['quantity'], 0, $it['purchase_price'],
                 $it['selling_price'], $it['discount'], $it['tax'], $it['line_total'],
+                $it['variant'] ?? null, $it['model_number'] ?? null, $it['serial_number'] ?? null,
+                $it['warranty_period'] ?? null, $it['warranty_expiry'] ?? null,
             ]);
         }
 
@@ -397,14 +418,18 @@ function createPurchase(PDO $pdo, array $post, int $userId): int {
 }
 
 function receivePurchaseLine(PDO $pdo, int $purchaseId, ?int $supplierId, array $it): int {
-    $addQty = (int)$it['quantity'] + (int)$it['free_quantity'];
+    $addQty = (int)$it['quantity'];
     $find = $pdo->prepare("
         SELECT id, quantity, purchase_price, selling_price, expiry_date, manufacture_date
         FROM batches
         WHERE medicine_id=? AND batch_number=?
+          AND COALESCE(variant,'')=? AND COALESCE(model_number,'')=? AND COALESCE(serial_number,'')=?
         LIMIT 1
     ");
-    $find->execute([$it['medicine_id'], $it['batch_number']]);
+    $find->execute([
+        $it['medicine_id'], $it['batch_number'],
+        (string)($it['variant'] ?? ''), (string)($it['model_number'] ?? ''), (string)($it['serial_number'] ?? ''),
+    ]);
     $existing = $find->fetch();
     if ($existing) {
         $priceDiff = abs((float)$existing['purchase_price'] - (float)$it['purchase_price']) > 0.009
@@ -414,7 +439,7 @@ function receivePurchaseLine(PDO $pdo, int $purchaseId, ?int $supplierId, array 
         $expDiff = $expNew !== '' && $expOld !== '' && $expNew !== $expOld
             && !(isNoExpiryDate($expNew) && isNoExpiryDate($expOld));
         if ($priceDiff || $expDiff) {
-            $label = $it['medicine_name'] ?? $it['med_name'] ?? ('medicine #' . $it['medicine_id']);
+            $label = $it['medicine_name'] ?? $it['med_name'] ?? ('product #' . $it['medicine_id']);
             throw new RuntimeException(
                 "Batch \"{$it['batch_number']}\" for {$label} already exists with different price or expiry. "
                 . 'Use a different batch number so purchase history and batch pricing stay accurate.'
@@ -427,22 +452,24 @@ function receivePurchaseLine(PDO $pdo, int $purchaseId, ?int $supplierId, array 
                 supplier_id = COALESCE(supplier_id, ?),
                 purchase_id = COALESCE(purchase_id, ?),
                 quantity_received = COALESCE(quantity_received, 0) + ?,
-                free_quantity = COALESCE(free_quantity, 0) + ?,
                 status = 'active'
             WHERE id = ?
         ")->execute([
-            $addQty, $supplierId, $purchaseId, $addQty, (int)$it['free_quantity'], $existing['id'],
+            $addQty, $supplierId, $purchaseId, $addQty, $existing['id'],
         ]);
         return (int)$existing['id'];
     }
     $pdo->prepare("
         INSERT INTO batches (
             medicine_id, batch_number, quantity, purchase_price, selling_price, expiry_date,
-            manufacture_date, supplier_id, purchase_id, quantity_received, free_quantity, status
-        ) VALUES (?,?,?,?,?,?,?,?,?,?,?, 'active')
+            manufacture_date, supplier_id, purchase_id, quantity_received, free_quantity, status,
+            variant, model_number, serial_number, warranty_period, warranty_expiry
+        ) VALUES (?,?,?,?,?,?,?,?,?,?,0,'active',?,?,?,?,?)
     ")->execute([
         $it['medicine_id'], $it['batch_number'], $addQty, $it['purchase_price'], $it['selling_price'],
-        $it['expiry_date'], $it['manufacturing_date'], $supplierId, $purchaseId, $addQty, (int)$it['free_quantity'],
+        $it['expiry_date'], $it['manufacturing_date'], $supplierId, $purchaseId, $addQty,
+        $it['variant'] ?? null, $it['model_number'] ?? null, $it['serial_number'] ?? null,
+        $it['warranty_period'] ?? null, $it['warranty_expiry'] ?? null,
     ]);
     return (int)$pdo->lastInsertId();
 }
@@ -533,7 +560,7 @@ function cancelPurchase(PDO $pdo, int $purchaseId, int $userId): void {
         if (($p['status'] ?? '') === 'received') {
             $items = fetchPurchaseItems($pdo, $purchaseId);
             foreach ($items as $it) {
-                $qty = (int)$it['quantity'] + (int)$it['free_quantity'] - (int)($it['returned_quantity'] ?? 0);
+                $qty = (int)$it['quantity'] - (int)($it['returned_quantity'] ?? 0);
                 if ($qty > 0 && !empty($it['batch_id'])) {
                     $pdo->prepare("UPDATE batches SET quantity = MAX(0, quantity - ?) WHERE id=?")->execute([$qty, $it['batch_id']]);
                 }
@@ -561,7 +588,7 @@ function createPurchaseReturn(PDO $pdo, int $purchaseId, array $post, int $userI
     $lines = [];
     $total = 0;
     foreach ($items as $it) {
-        $max = (int)$it['quantity'] + (int)$it['free_quantity'] - (int)($it['returned_quantity'] ?? 0);
+        $max = (int)$it['quantity'] - (int)($it['returned_quantity'] ?? 0);
         $qty = (int)($qtys[$it['id']] ?? 0);
         if ($qty <= 0) continue;
         if ($qty > $max) {
@@ -808,4 +835,60 @@ function listPurchases(PDO $pdo, array $filters, int $page, int $perPage): array
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     return ['rows' => $stmt->fetchAll(), 'total' => $total, 'page' => $page, 'pages' => $pages];
+}
+
+/**
+ * Quick-create a master product (medicine / cosmetic / equipment) from the purchase
+ * screen. Refuses to create a duplicate of an existing product name.
+ */
+function quickCreateProduct(PDO $pdo, array $post): array {
+    $name = trim($post['name'] ?? '');
+    $type = trim($post['product_type'] ?? 'medicine');
+    if (!isset(productTypes()[$type])) $type = 'medicine';
+    if ($name === '') {
+        throw new RuntimeException('Product name is required.');
+    }
+    $unit = trim($post['unit'] ?? '');
+    if ($unit === '') {
+        $unit = 'pcs';
+    }
+    $sku = trim($post['sku'] ?? '');
+    $barcode = trim($post['barcode'] ?? '');
+    $categoryId = (int)($post['category_id'] ?? 0) ?: null;
+
+    $dup = $pdo->prepare("SELECT id, name, COALESCE(product_type,'medicine') FROM medicines WHERE LOWER(name)=LOWER(?) LIMIT 1");
+    $dup->execute([$name]);
+    if ($dup->fetch()) {
+        throw new RuntimeException("A product named \"{$name}\" already exists. Select it from the search results instead of creating a duplicate.");
+    }
+    if ($sku !== '') {
+        $dupSku = $pdo->prepare("SELECT id FROM medicines WHERE LOWER(sku)=LOWER(?) LIMIT 1");
+        $dupSku->execute([$sku]);
+        if ($dupSku->fetch()) {
+            throw new RuntimeException("SKU \"{$sku}\" is already used by another product. Enter a different SKU or leave it blank.");
+        }
+    }
+    if ($barcode !== '') {
+        $dupBar = $pdo->prepare("SELECT id FROM medicines WHERE LOWER(barcode)=LOWER(?) LIMIT 1");
+        $dupBar->execute([$barcode]);
+        if ($dupBar->fetch()) {
+            throw new RuntimeException("Barcode \"{$barcode}\" is already used by another product. Enter a different barcode or leave it blank.");
+        }
+    }
+
+    $pdo->prepare("INSERT INTO medicines (name, category_id, unit, sku, barcode, reorder_level, product_type, description) VALUES (?,?,?,?,?,10,?,?)")
+        ->execute([$name, $categoryId, $unit, $sku !== '' ? $sku : null, $barcode !== '' ? $barcode : null, $type, 'Created from purchase screen']);
+    $newId = (int)$pdo->lastInsertId();
+    auditLog($pdo, 'create', 'medicine', $newId, $name);
+
+    $st = $pdo->prepare("
+        SELECT m.id, m.name, m.generic_name, m.unit, m.sku, m.barcode,
+               COALESCE(m.product_type,'medicine') AS product_type,
+               c.name AS category_name
+        FROM medicines m
+        LEFT JOIN categories c ON c.id = m.category_id
+        WHERE m.id=?
+    ");
+    $st->execute([$newId]);
+    return $st->fetch();
 }

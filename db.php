@@ -340,6 +340,16 @@ function initPurchaseModuleSchema(PDO $pdo): void {
         "ALTER TABLE batches ADD COLUMN quantity_received INTEGER DEFAULT 0",
         "ALTER TABLE batches ADD COLUMN free_quantity INTEGER DEFAULT 0",
         "ALTER TABLE batches ADD COLUMN status TEXT DEFAULT 'active'",
+        "ALTER TABLE batches ADD COLUMN variant TEXT",
+        "ALTER TABLE batches ADD COLUMN model_number TEXT",
+        "ALTER TABLE batches ADD COLUMN serial_number TEXT",
+        "ALTER TABLE batches ADD COLUMN warranty_period TEXT",
+        "ALTER TABLE batches ADD COLUMN warranty_expiry DATE",
+        "ALTER TABLE purchase_items ADD COLUMN variant TEXT",
+        "ALTER TABLE purchase_items ADD COLUMN model_number TEXT",
+        "ALTER TABLE purchase_items ADD COLUMN serial_number TEXT",
+        "ALTER TABLE purchase_items ADD COLUMN warranty_period TEXT",
+        "ALTER TABLE purchase_items ADD COLUMN warranty_expiry DATE",
     ] as $sql) {
         try { $pdo->exec($sql); } catch (PDOException $e) { /* already applied */ }
     }

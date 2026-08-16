@@ -22,6 +22,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $sellingPrice   = (float)$_POST['selling_price'];
         $expiryDate     = trim($_POST['expiry_date'] ?? '');
         $manufactureDate = trim($_POST['manufacture_date'] ?? '') ?: null;
+        $variant        = trim($_POST['variant'] ?? '');
+        $modelNumber    = trim($_POST['model_number'] ?? '');
+        $serialNumber   = trim($_POST['serial_number'] ?? '');
+        $warrantyPeriod = trim($_POST['warranty_period'] ?? '');
+        $warrantyExpiry = trim($_POST['warranty_expiry'] ?? '') ?: null;
 
         $typeStmt = $pdo->prepare("SELECT COALESCE(product_type, 'medicine') FROM medicines WHERE id=?");
         $typeStmt->execute([$medicineId]);
@@ -51,11 +56,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $pdo->prepare("
                         UPDATE batches
                         SET medicine_id=?, batch_number=?, quantity=?, purchase_price=?,
-                            selling_price=?, expiry_date=?, manufacture_date=?
+                            selling_price=?, expiry_date=?, manufacture_date=?,
+                            variant=?, model_number=?, serial_number=?, warranty_period=?, warranty_expiry=?
                         WHERE id=?
                     ")->execute([
                         $medicineId, $batchNumber, $quantity, $purchasePrice,
-                        $sellingPrice, $expiryDate, $manufactureDate, $bid
+                        $sellingPrice, $expiryDate, $manufactureDate, $variant, $modelNumber,
+                        $serialNumber, $warrantyPeriod, $warrantyExpiry, $bid
                     ]);
                     $msg = 'Batch updated successfully.';
                 }
@@ -225,12 +232,12 @@ renderSidebar();
         <tr>
           <th>Medicine</th><th>Category</th><th>Batch #</th>
           <th>Qty</th><th>Buy Price</th><th>Sell Price</th>
-          <th>Expiry</th><th>Status</th><th>Actions</th>
+          <th>Expiry</th><th>Warranty</th><th>Status</th><th>Actions</th>
         </tr>
       </thead>
       <tbody>
       <?php if (empty($batches)): ?>
-        <tr><td colspan="9" style="text-align:center;padding:40px;color:var(--text-300);">No batches match your filter</td></tr>
+        <tr><td colspan="10" style="text-align:center;padding:40px;color:var(--text-300);">No batches match your filter</td></tr>
       <?php else: ?>
       <?php foreach ($batches as $b):
         $noExpiry = isNoExpiryDate($b['expiry_date'] ?? '');
@@ -248,14 +255,23 @@ renderSidebar();
 
         $qtyClass = $b['quantity'] == 0 ? 'badge-gray' : ($b['quantity'] <= $b['reorder_level'] ? 'badge-orange' : 'badge-green');
       ?>
+      <?php
+        $batchDetail = trim(implode(' · ', array_filter([
+            $b['variant'] ?? '', $b['model_number'] ?? '', $b['serial_number'] ?? '',
+        ], fn($v) => $v !== '' && $v !== null)));
+        $warranty = trim(implode(' · ', array_filter([
+            $b['warranty_period'] ?? '', !empty($b['warranty_expiry']) ? ('until ' . $b['warranty_expiry']) : '',
+        ], fn($v) => $v !== '' && $v !== null)));
+      ?>
       <tr>
         <td style="font-weight:600;color:var(--text-100);"><?= htmlspecialchars($b['med_name']) ?></td>
         <td><span class="badge badge-gray" style="font-size:11px;"><?= htmlspecialchars($b['cat_name'] ?? '—') ?></span></td>
-        <td><code style="background:var(--bg-600);padding:2px 7px;border-radius:4px;font-size:12px;"><?= htmlspecialchars($b['batch_number']) ?></code></td>
+        <td><code style="background:var(--bg-600);padding:2px 7px;border-radius:4px;font-size:12px;"><?= htmlspecialchars($b['batch_number']) ?></code><?= $batchDetail !== '' ? '<div style="font-size:11px;color:var(--text-300);margin-top:3px;">' . htmlspecialchars($batchDetail) . '</div>' : '' ?></td>
         <td><span class="badge <?= $qtyClass ?>"><?= number_format($b['quantity']) ?> <?= htmlspecialchars($b['unit']) ?></span></td>
         <td style="color:var(--text-300);"><?= currency($b['purchase_price']) ?></td>
         <td style="color:var(--accent2);font-weight:700;"><?= currency($b['selling_price']) ?></td>
         <td style="font-size:12px;"><?= formatExpiryDate($b['expiry_date']) ?></td>
+        <td style="font-size:12px;"><?= $warranty !== '' ? htmlspecialchars($warranty) : '—' ?></td>
         <td><span class="badge <?= $statusClass ?>"><?= $statusLabel ?></span></td>
         <td>
           <div class="row-actions">
@@ -270,6 +286,11 @@ renderSidebar();
                 'selling_price'   => (float)$b['selling_price'],
                 'expiry_date'     => isNoExpiryDate($b['expiry_date'] ?? '') ? '' : $b['expiry_date'],
                 'manufacture_date'=> $b['manufacture_date'] ?? '',
+                'variant'         => $b['variant'] ?? '',
+                'model_number'    => $b['model_number'] ?? '',
+                'serial_number'   => $b['serial_number'] ?? '',
+                'warranty_period' => $b['warranty_period'] ?? '',
+                'warranty_expiry' => $b['warranty_expiry'] ?? '',
               ]), ENT_QUOTES) ?>)'>Edit</button>
             <form method="POST" action="<?= htmlspecialchars($_SERVER['REQUEST_URI'] ?? 'inventory.php') ?>" onsubmit="return confirmDelete(this)">
               <input type="hidden" name="act" value="delete_batch">
@@ -379,6 +400,30 @@ renderSidebar();
           <label>Manufacture Date <span style="color:var(--text-300);font-weight:400;">(optional)</span></label>
           <input type="date" name="manufacture_date" id="editManufactureDate">
         </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Variant <span style="color:var(--text-300);font-weight:400;">(cosmetics)</span></label>
+            <input type="text" name="variant" id="editVariant" placeholder="e.g. Shade 20">
+          </div>
+          <div class="form-group">
+            <label>Model Number</label>
+            <input type="text" name="model_number" id="editModelNumber" placeholder="e.g. DT-200">
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="form-group">
+            <label>Serial Number</label>
+            <input type="text" name="serial_number" id="editSerialNumber" placeholder="Serial #">
+          </div>
+          <div class="form-group">
+            <label>Warranty Period</label>
+            <input type="text" name="warranty_period" id="editWarrantyPeriod" placeholder="e.g. 1 year">
+          </div>
+          <div class="form-group">
+            <label>Warranty Expiry</label>
+            <input type="date" name="warranty_expiry" id="editWarrantyExpiry">
+          </div>
+        </div>
         <div class="form-actions" style="padding-top:12px;margin-top:12px;">
           <button type="submit" class="btn btn-primary">Save Changes</button>
           <button type="button" class="btn btn-ghost" onclick="closeModal('editModal')">Cancel</button>
@@ -410,6 +455,11 @@ function openEditModal(batch) {
   document.getElementById('editSellingPrice').value    = batch.selling_price;
   document.getElementById('editExpiryDate').value      = batch.expiry_date || '';
   document.getElementById('editManufactureDate').value = batch.manufacture_date || '';
+  document.getElementById('editVariant').value         = batch.variant || '';
+  document.getElementById('editModelNumber').value     = batch.model_number || '';
+  document.getElementById('editSerialNumber').value    = batch.serial_number || '';
+  document.getElementById('editWarrantyPeriod').value  = batch.warranty_period || '';
+  document.getElementById('editWarrantyExpiry').value  = batch.warranty_expiry || '';
   syncEditExpiryRequired();
   openModal('editModal');
 }

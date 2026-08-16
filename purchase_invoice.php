@@ -64,16 +64,19 @@ renderSidebar();
 
   <table class="rt-items">
     <thead>
-      <tr><th>Product</th><th>Batch</th><th>Exp</th><th>Qty</th><th>Free</th><th>Price</th><th>Total</th></tr>
+      <tr><th>Product</th><th>Batch</th><th>Exp</th><th>Qty</th><th>Price</th><th>Total</th></tr>
     </thead>
     <tbody>
-    <?php foreach ($items as $it): ?>
+    <?php foreach ($items as $it):
+      $detail = trim(implode(' · ', array_filter([
+          $it['variant'] ?? '', $it['model_number'] ?? '', $it['serial_number'] ?? '',
+      ], fn($v) => $v !== '' && $v !== null)));
+    ?>
       <tr>
-        <td><?= htmlspecialchars($it['med_name']) ?></td>
+        <td><?= htmlspecialchars($it['med_name']) ?><?= $detail !== '' ? '<br><small>' . htmlspecialchars($detail) . '</small>' : '' ?></td>
         <td><?= htmlspecialchars($it['batch_number']) ?></td>
         <td><?= formatExpiryDate($it['expiry_date']) ?></td>
         <td><?= (int)$it['quantity'] ?></td>
-        <td><?= (int)($it['free_quantity'] ?? 0) ?></td>
         <td><?= number_format((float)$it['purchase_price'], 2) ?></td>
         <td><?= number_format((float)($it['line_total'] ?: $it['quantity'] * $it['purchase_price']), 2) ?></td>
       </tr>
