@@ -94,7 +94,7 @@ renderSidebar();
       <tr>
         <td><span class="badge badge-gray">#<?= ($page-1)*$perPage + $i + 1 ?></span></td>
         <td style="font-weight:600;"><?= htmlspecialchars($m['name']) ?></td>
-        <td><?= htmlspecialchars($m['category']) ?></td>
+        <td><?= htmlspecialchars(productTypeLabel($m['product_type']) . ' · ' . $m['category']) ?></td>
         <td><?= number_format($m['qty_sold']) ?></td>
         <td style="color:var(--accent2);font-weight:700;"><?= currency($m['revenue']) ?></td>
         <td><?= currency($m['purchase_cost']) ?></td>
@@ -125,7 +125,7 @@ renderSidebar();
       <?php foreach ($slowProducts as $sp): ?>
       <tr>
         <td style="font-weight:600;"><?= htmlspecialchars($sp['name']) ?></td>
-        <td><?= htmlspecialchars($sp['category']) ?></td>
+        <td><?= htmlspecialchars(productTypeLabel($sp['product_type']) . ' · ' . $sp['category']) ?></td>
         <td><?= number_format($sp['current_stock']) ?></td>
         <td><?= number_format($sp['units_sold']) ?></td>
         <td><?= $sp['last_sale_date'] ? date('M j, Y', strtotime($sp['last_sale_date'])) : '<span style="color:var(--danger);">No sales</span>' ?></td>
@@ -467,7 +467,7 @@ renderSidebar();
       <tr>
         <td style="font-weight:600;"><?= htmlspecialchars($sr['name']) ?></td>
         <td><?= htmlspecialchars($sr['generic_name'] ?? '—') ?></td>
-        <td><?= htmlspecialchars($sr['category'] ?? '—') ?></td>
+        <td><?= htmlspecialchars(productTypeLabel($sr['product_type'] ?? '') . ' · ' . ($sr['category'] ?? '—')) ?></td>
         <td><?= htmlspecialchars($sr['barcode'] ?? '—') ?></td>
         <td><?= number_format($sr['current_stock'] ?? 0) ?></td>
         <td><a href="?med=<?= $sr['id'] ?>&<?= reportQueryString($dates, $filters) ?>" class="btn btn-primary btn-sm">View Report</a></td>

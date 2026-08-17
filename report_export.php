@@ -16,7 +16,7 @@ switch ($report) {
     case 'products':
         $headers = ['Product', 'Category', 'Units Sold', 'Revenue', 'Purchase Cost', 'Gross Profit', 'Profit %', 'Current Stock'];
         foreach (reportTopProducts($pdo, $dates, $filters, $_GET['sort'] ?? 'qty', 5000) as $p) {
-            $rows[] = [$p['name'], $p['category'], $p['qty_sold'], $p['revenue'], $p['purchase_cost'], $p['gross_profit'], number_format((float)$p['profit_margin'], 1) . '%', $p['current_stock']];
+            $rows[] = [$p['name'], productTypeLabel($p['product_type'] ?? '') . ' · ' . $p['category'], $p['qty_sold'], $p['revenue'], $p['purchase_cost'], $p['gross_profit'], number_format((float)$p['profit_margin'], 1) . '%', $p['current_stock']];
         }
         $filename = 'best-selling-products-' . $dates['from'] . '-' . $dates['to'];
         break;
@@ -32,7 +32,7 @@ switch ($report) {
                 $rows = [
                     ['Product Name', $m['name']],
                     ['Generic Name', $m['generic_name'] ?? ''],
-                    ['Category', $m['category_name']],
+                    ['Category', productTypeLabel($m['product_type'] ?? '') . ' · ' . $m['category_name']],
                     ['Barcode', $m['barcode'] ?? ''],
                     ['SKU', $m['sku'] ?? ''],
                     ['Current Stock', $m['current_stock']],
@@ -171,6 +171,50 @@ switch ($report) {
             }
             $filename = 'purchases-' . $from . '-' . $to;
         }
+        break;
+    case 'inventory':
+        $invF = reportInventoryFilters($_GET);
+        $invSummary = reportInventorySummary($pdo, $dates, $invF);
+        $headers = ['Metric', 'Value'];
+        $rows = [
+            ['Inventory Cost Value', $invSummary['cost']],
+            ['Inventory Retail Value', $invSummary['retail']],
+            ['Expected Gross Profit', $invSummary['profit']],
+            ['Total Units in Stock', $invSummary['units']],
+            ['Total Products', $invSummary['products']],
+            ['Low Stock Items', $invSummary['low']],
+            ['Out of Stock Items', $invSummary['out']],
+            ['Near Expiry Items (30d)', $invSummary['near']],
+            ['Expired Items', $invSummary['expired']],
+        ];
+        $rows[] = ['', ''];
+        $rows[] = ['Stock Status', ''];
+        $rows[] = ['Product', 'Generic Name', 'Category', 'Stock', 'Reorder Level', 'Units Purchased', 'Units Sold', 'Units Returned', 'Last Purchase', 'Last Sale', 'Cost Value', 'Retail Value', 'Expected Profit', 'Profit Margin %', 'Stock Status'];
+        foreach (reportInventoryProducts($pdo, $dates, $invF) as $p) {
+            $st = inventoryStockStatus($p);
+            $retail = (float)$p['retail_value'];
+            $cost = (float)$p['cost_value'];
+            $rows[] = [
+                $p['name'], $p['generic_name'], reportInventoryBucketLabel($p['bucket']) . ' / ' . $p['category'],
+                $p['stock'], $p['reorder_level'], $p['units_purchased'], $p['qty_sold'], $p['units_returned'],
+                $p['last_purchase'] ? substr($p['last_purchase'], 0, 10) : '', $p['last_sale'] ?: '',
+                round($cost, 2), round($retail, 2), round($retail - $cost, 2),
+                $retail > 0 ? round(($retail - $cost) / $retail * 100, 1) : 0,
+                inventoryStockStatusLabel($st),
+            ];
+        }
+        $rows[] = ['', ''];
+        $rows[] = ['Expiry Management', ''];
+        $rows[] = ['Product', 'Batch', 'Qty', 'Expiry Date', 'Days Remaining', 'Cost Value', 'Retail Value', 'Status'];
+        foreach (reportInventoryExpiryRows($pdo, $dates, $invF) as $r) {
+            $rows[] = [
+                $r['name'], $r['batch_number'], $r['quantity'],
+                $r['expiry_date'] && $r['expiry_date'] < '9000-01-01' ? $r['expiry_date'] : '',
+                $r['status']['days'] !== null ? $r['status']['days'] : '',
+                round((float)$r['cost_value'], 2), round((float)$r['retail_value'], 2), $r['status']['label'],
+            ];
+        }
+        $filename = 'inventory-report-' . $dates['from'] . '-' . $dates['to'];
         break;
     default:
         $kpis = reportOverviewKpis($pdo, $dates, $filters);

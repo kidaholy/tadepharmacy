@@ -17,6 +17,14 @@ $payments   = reportSalesPayments($pdo, $dates, $filters);
 $customers  = reportSalesCustomers($pdo, $dates, $filters);
 $cashiers   = reportSalesCashiers($pdo, $dates, $filters);
 $categories = reportSalesCategories($pdo, $dates, $filters);
+// Group category rows by product type (Medicine / Cosmetics / Equipment / Other) with per-type totals.
+$catGroups = [];
+$catGrand  = ['transactions' => 0, 'units' => 0, 'revenue' => 0, 'profit' => 0];
+foreach ($categories as $cat) {
+    $catGroups[$cat['type']]['label'] = $cat['type_label'];
+    $catGroups[$cat['type']]['rows'][] = $cat;
+    foreach ($catGrand as $k => $v) $catGrand[$k] += $cat[$k];
+}
 $returns    = reportSalesReturns($pdo, $dates, $filters);
 
 // Sales history pagination
@@ -55,7 +63,7 @@ renderSidebar();
 <div class="page-body">
 
 <?php renderReportNav('report_sales', $dates, $filters); ?>
-<?php renderReportFilters($dates, $filters, $options, '', reportSalesDatePresets(), false, false, 'sales_report'); ?>
+<?php renderReportFilters($dates, $filters, $options, '', reportSalesDatePresets(), true, false, 'sales_report'); ?>
 <?php renderReportMeta('Sales Report', $dates); ?>
 
 <!-- Main Sales Summary -->
@@ -213,15 +221,42 @@ renderSidebar();
         <tr><th>Category</th><th>Transactions</th><th>Units Sold</th><th>Revenue</th><th>Profit</th></tr>
       </thead>
       <tbody>
-      <?php foreach ($categories as $cat): ?>
+      <?php if (empty($catGroups)): ?>
+        <tr><td colspan="5" style="text-align:center;padding:30px;color:var(--text-300);">No sales in this range</td></tr>
+      <?php else: ?>
+      <?php foreach ($catGroups as $type => $grp): ?>
+        <tr style="background:var(--bg-500);">
+          <td colspan="5" style="font-weight:700;letter-spacing:0.3px;"><?= htmlspecialchars($grp['label']) ?></td>
+        </tr>
+        <?php
+        $tTot = ['transactions' => 0, 'units' => 0, 'revenue' => 0, 'profit' => 0];
+        foreach ($grp['rows'] as $cat):
+            foreach ($tTot as $k => $v) $tTot[$k] += $cat[$k];
+        ?>
         <tr>
-          <td style="font-weight:600;"><?= htmlspecialchars($cat['category']) ?></td>
+          <td style="padding-left:28px;"><?= htmlspecialchars($cat['category']) ?></td>
           <td style="text-align:center;"><?= number_format($cat['transactions']) ?></td>
           <td style="text-align:center;"><?= number_format((int)$cat['units']) ?></td>
           <td style="font-weight:700;color:var(--accent2);"><?= currency($cat['revenue']) ?></td>
           <td style="font-weight:700;color:<?= (float)$cat['profit'] >= 0 ? 'var(--accent2)' : 'var(--danger)' ?>;"><?= currency($cat['profit']) ?></td>
         </tr>
+        <?php endforeach; ?>
+        <tr style="background:var(--bg-600);">
+          <td style="font-weight:700;"><?= htmlspecialchars($grp['label']) ?> Subtotal</td>
+          <td style="text-align:center;font-weight:600;"><?= number_format($tTot['transactions']) ?></td>
+          <td style="text-align:center;font-weight:600;"><?= number_format((int)$tTot['units']) ?></td>
+          <td style="font-weight:700;color:var(--accent2);"><?= currency($tTot['revenue']) ?></td>
+          <td style="font-weight:700;color:<?= (float)$tTot['profit'] >= 0 ? 'var(--accent2)' : 'var(--danger)' ?>;"><?= currency($tTot['profit']) ?></td>
+        </tr>
       <?php endforeach; ?>
+        <tr style="background:var(--bg-500);">
+          <td style="font-weight:800;">Total</td>
+          <td style="text-align:center;font-weight:700;"><?= number_format($catGrand['transactions']) ?></td>
+          <td style="text-align:center;font-weight:700;"><?= number_format((int)$catGrand['units']) ?></td>
+          <td style="font-weight:800;color:var(--accent2);"><?= currency($catGrand['revenue']) ?></td>
+          <td style="font-weight:800;color:<?= (float)$catGrand['profit'] >= 0 ? 'var(--accent2)' : 'var(--danger)' ?>;"><?= currency($catGrand['profit']) ?></td>
+        </tr>
+      <?php endif; ?>
       </tbody>
     </table>
   </div>

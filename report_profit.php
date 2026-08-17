@@ -27,6 +27,7 @@ $profitByProduct = reportTopProducts($pdo, $dates, $filters, 'profit', 25);
 $itemCtx = reportItemFilterContext($filters, $from, $to);
 $profitByCat = $pdo->prepare("
     SELECT COALESCE(c.name,'Uncategorized') AS category,
+           COALESCE(m.product_type, c.product_type, '') AS mtype,
            SUM(si.subtotal) AS revenue,
            SUM(si.quantity * b.purchase_price) AS cogs,
            SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS gross_profit
@@ -34,10 +35,20 @@ $profitByCat = $pdo->prepare("
     {$itemCtx['joins']}
     LEFT JOIN categories c ON c.id = m.category_id
     WHERE {$itemCtx['where']}
-    GROUP BY c.id ORDER BY gross_profit DESC
+    GROUP BY c.id
 ");
 $profitByCat->execute($itemCtx['params']);
 $profitByCat = $profitByCat->fetchAll();
+
+// Group categories by product type (Medicine / Cosmetics / Equipment / Other) with per-type totals.
+$profitCatGroups = [];
+$profitCatGrand  = ['revenue' => 0, 'cogs' => 0, 'gross_profit' => 0];
+foreach ($profitByCat as $c) {
+    $t = reportCategoryType($c['mtype'] ?? null, null, $c['category']);
+    $profitCatGroups[$t]['label'] = productTypeLabel($t);
+    $profitCatGroups[$t]['rows'][] = $c;
+    foreach ($profitCatGrand as $k => $v) $profitCatGrand[$k] += (float)$c[$k];
+}
 
 $dailyProfit = $pdo->prepare("
     SELECT " . reportLocalDateExpr('s') . " AS day,
@@ -99,15 +110,37 @@ renderSidebar();
   </div>
 </div>
 
-<div class="grid-2 mb-20">
-  <div class="card">
+<div class="grid-2 mb-20">    <div class="card">
     <div class="card-header"><span class="card-title">Profit by Category</span></div>
     <div class="table-wrap"><table>
       <thead><tr><th>Category</th><th>Revenue</th><th>COGS</th><th>Gross Profit</th></tr></thead>
       <tbody>
-      <?php foreach ($profitByCat as $c): ?>
-      <tr><td><?= htmlspecialchars($c['category']) ?></td><td><?= currency($c['revenue']) ?></td><td><?= currency($c['cogs']) ?></td><td style="font-weight:700;color:var(--accent2);"><?= currency($c['gross_profit']) ?></td></tr>
+      <?php if (empty($profitCatGroups)): ?>
+      <tr><td colspan="4" style="text-align:center;padding:20px;color:var(--text-300);">No sales in this range</td></tr>
+      <?php else: ?>
+      <?php foreach ($profitCatGroups as $grp): ?>
+        <tr style="background:var(--bg-500);"><td colspan="4" style="font-weight:700;letter-spacing:0.3px;"><?= htmlspecialchars($grp['label']) ?></td></tr>
+        <?php
+        $tTot = ['revenue' => 0, 'cogs' => 0, 'gross_profit' => 0];
+        foreach ($grp['rows'] as $c):
+            foreach ($tTot as $k => $v) $tTot[$k] += (float)$c[$k];
+        ?>
+        <tr><td style="padding-left:28px;"><?= htmlspecialchars($c['category']) ?></td><td><?= currency($c['revenue']) ?></td><td><?= currency($c['cogs']) ?></td><td style="font-weight:700;color:var(--accent2);"><?= currency($c['gross_profit']) ?></td></tr>
+        <?php endforeach; ?>
+        <tr style="background:var(--bg-600);">
+          <td style="font-weight:700;"><?= htmlspecialchars($grp['label']) ?> Subtotal</td>
+          <td style="font-weight:600;"><?= currency($tTot['revenue']) ?></td>
+          <td style="font-weight:600;"><?= currency($tTot['cogs']) ?></td>
+          <td style="font-weight:700;color:var(--accent2);"><?= currency($tTot['gross_profit']) ?></td>
+        </tr>
       <?php endforeach; ?>
+        <tr style="background:var(--bg-500);">
+          <td style="font-weight:800;">Total</td>
+          <td style="font-weight:700;"><?= currency($profitCatGrand['revenue']) ?></td>
+          <td style="font-weight:700;"><?= currency($profitCatGrand['cogs']) ?></td>
+          <td style="font-weight:800;color:var(--accent2);"><?= currency($profitCatGrand['gross_profit']) ?></td>
+        </tr>
+      <?php endif; ?>
       </tbody>
     </table></div>
   </div>

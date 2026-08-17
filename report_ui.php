@@ -105,8 +105,25 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
         <label>Category</label>
         <select name="category">
           <option value="">All Categories</option>
-          <?php foreach ($options['categories'] as $c): ?>
-          <option value="<?= $c['id'] ?>" <?= $filters['category'] == $c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
+          <?php
+          // Group categories by product type so Medicine / Cosmetics / Equipment stay separate.
+          $catGroups = [];
+          foreach ($options['categories'] as $c) {
+              $pt = $c['product_type'] ?? 'medicine';
+              $catGroups[$pt][] = $c;
+          }
+          $catLabels = ['medicine' => 'Medicine', 'cosmetic' => 'Cosmetics', 'equipment' => 'Equipment'];
+          foreach (array_keys($catGroups) as $pt) {
+              if (!isset($catLabels[$pt])) $catLabels[$pt] = ucfirst($pt);
+          }
+          foreach ($catLabels as $pt => $ptLabel):
+              if (empty($catGroups[$pt])) continue;
+          ?>
+          <optgroup label="<?= htmlspecialchars($ptLabel) ?>">
+            <?php foreach ($catGroups[$pt] as $c): ?>
+            <option value="<?= $c['id'] ?>" <?= $filters['category'] == $c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
+            <?php endforeach; ?>
+          </optgroup>
           <?php endforeach; ?>
         </select>
       </div>

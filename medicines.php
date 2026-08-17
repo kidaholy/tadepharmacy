@@ -281,6 +281,29 @@ foreach ($categories as $c) {
         $defaultCatId = (int) $c['id'];
     }
 }
+// Only offer categories of the current product type, so medicine categories
+// (e.g. Antibiotic) are never mixed with cosmetics (e.g. Haircare) or equipment.
+$categoriesByType = ['medicine' => [], 'cosmetic' => [], 'equipment' => []];
+foreach ($categories as $c) {
+    $ct = $c['product_type'] ?? 'medicine';
+    if (isset($categoriesByType[$ct])) {
+        $categoriesByType[$ct][] = $c;
+    }
+}
+$typeCategories = $categoriesByType[$typeFilter] ?? [];
+if (!$typeCategories) {
+    // Fallback: show everything if no category exists for this type yet.
+    $typeCategories = $categories;
+}
+$editCatId = (int)($edit['category_id'] ?? 0);
+if ($editCatId && !in_array($editCatId, array_map(fn($c) => (int)$c['id'], $typeCategories), true)) {
+    // Keep a legacy cross-type category visible while editing so it is not silently lost.
+    $legacyCat = $pdo->prepare('SELECT id, name FROM categories WHERE id = ?');
+    $legacyCat->execute([$editCatId]);
+    if ($row = $legacyCat->fetch()) {
+        $typeCategories[] = $row;
+    }
+}
 $page      = max(1, (int)($_GET['page'] ?? 1));
 $perPage   = 50;
 
@@ -357,7 +380,7 @@ renderSidebar();
         <label>Category</label>
         <select name="category_id">
           <option value="">— Select Category —</option>
-          <?php foreach ($categories as $c):
+          <?php foreach ($typeCategories as $c):
             $selectedId = (int)($edit['category_id'] ?? $defaultCatId);
           ?>
           <option value="<?= $c['id'] ?>" <?= $selectedId === (int)$c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
@@ -455,7 +478,7 @@ renderSidebar();
       </div>
       <select name="cat" style="width:180px;">
         <option value="">All Categories</option>
-        <?php foreach ($categories as $c): ?>
+        <?php foreach ($typeCategories as $c): ?>
         <option value="<?= $c['id'] ?>" <?= $catFilter == $c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
         <?php endforeach; ?>
       </select>
