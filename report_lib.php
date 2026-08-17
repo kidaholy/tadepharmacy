@@ -55,6 +55,12 @@ function reportParseDateRange(array $input): array {
         case 'today':
             $from = $to = $today;
             break;
+        case 'this_week':
+            // Monday of the current business week through today.
+            $dow = (int)date('N'); // 1 = Mon .. 7 = Sun
+            $from = date('Y-m-d', strtotime('-' . ($dow - 1) . ' days'));
+            $to   = $today;
+            break;
         case 'yesterday':
             $from = $to = date('Y-m-d', strtotime('-1 day'));
             break;
@@ -488,6 +494,7 @@ function reportTopProducts(PDO $pdo, array $dates, array $filters, string $sort 
         'rev'    => 'revenue DESC',
         'profit' => 'gross_profit DESC',
         'net'    => 'net_profit DESC',
+        'margin' => 'profit_margin DESC',
     ];
     $order = $orderMap[$sort] ?? 'qty_sold DESC';
 
@@ -499,6 +506,9 @@ function reportTopProducts(PDO $pdo, array $dates, array $filters, string $sort 
                SUM(si.quantity * b.purchase_price) AS purchase_cost,
                SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS gross_profit,
                SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS net_profit,
+               CASE WHEN SUM(si.subtotal) > 0
+                    THEN (SUM(si.subtotal) - SUM(si.quantity * b.purchase_price)) / SUM(si.subtotal) * 100
+                    ELSE 0 END AS profit_margin,
                COALESCE(st.stock, 0) AS current_stock
         FROM sale_items si
         {$ctx['joins']}
@@ -561,12 +571,67 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
     $trend->execute([$medId, $from, $to]);
     $trend = $trend->fetchAll();
 
+    // Weekly trend
+    $trendWeekly = $pdo->prepare("
+        SELECT strftime('%Y-W%W', $day) AS period,
+               SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
+               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
+        WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
+        GROUP BY period ORDER BY period ASC
+    ");
+    $trendWeekly->execute([$medId, $from, $to]);
+    $trendWeekly = $trendWeekly->fetchAll();
+
+    // Monthly trend
+    $trendMonthly = $pdo->prepare("
+        SELECT strftime('%Y-%m', $day) AS period,
+               SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
+               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
+        WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
+        GROUP BY period ORDER BY period ASC
+    ");
+    $trendMonthly->execute([$medId, $from, $to]);
+    $trendMonthly = $trendMonthly->fetchAll();
+
+    // Yearly trend
+    $trendYearly = $pdo->prepare("
+        SELECT strftime('%Y', $day) AS period,
+               SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
+               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
+        WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
+        GROUP BY period ORDER BY period ASC
+    ");
+    $trendYearly->execute([$medId, $from, $to]);
+    $trendYearly = $trendYearly->fetchAll();
+
     $batches = $pdo->prepare("
         SELECT batch_number, expiry_date, quantity, purchase_price, selling_price
         FROM batches WHERE medicine_id = ? ORDER BY expiry_date ASC
     ");
     $batches->execute([$medId]);
     $batches = $batches->fetchAll();
+
+    // Batch performance with sales data
+    $batchPerf = $pdo->prepare("
+        SELECT b.batch_number, b.expiry_date,
+               COALESCE(b.quantity_received, b.quantity + COALESCE(sold.qty, 0)) AS qty_purchased,
+               b.quantity AS remaining,
+               COALESCE(sold.qty, 0) AS qty_sold,
+               COALESCE(sold.sales_value, 0) AS sales_value,
+               b.purchase_price, b.selling_price
+        FROM batches b
+        LEFT JOIN (
+            SELECT batch_id, SUM(quantity) AS qty, SUM(subtotal) AS sales_value
+            FROM sale_items GROUP BY batch_id
+        ) sold ON sold.batch_id = b.id
+        WHERE b.medicine_id = ?
+        ORDER BY b.expiry_date ASC
+    ");
+    $batchPerf->execute([$medId]);
+    $batchPerf = $batchPerf->fetchAll();
 
     $paySplit = $pdo->prepare("
         SELECT s.payment_method, SUM(si.subtotal) AS amount, SUM(si.quantity) AS qty
@@ -601,9 +666,117 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
     $nearStmt->execute([$medId]);
     $nearExpiry = (int)$nearStmt->fetchColumn();
 
+    // Batch count
+    $batchCountStmt = $pdo->prepare("SELECT COUNT(*) FROM batches WHERE medicine_id = ?");
+    $batchCountStmt->execute([$medId]);
+    $batchCount = (int)$batchCountStmt->fetchColumn();
+
+    // Expiry summary
+    $expirySummary = $pdo->prepare("
+        SELECT
+            COALESCE(SUM(CASE WHEN expiry_date < date('now') AND expiry_date < '9000-01-01' THEN quantity ELSE 0 END), 0) AS expired,
+            COALESCE(SUM(CASE WHEN expiry_date BETWEEN date('now') AND date('now','+30 days') AND expiry_date < '9000-01-01' THEN quantity ELSE 0 END), 0) AS near_expiry,
+            COALESCE(SUM(CASE WHEN expiry_date > date('now','+30 days') OR expiry_date >= '9000-01-01' THEN quantity ELSE 0 END), 0) AS good
+        FROM batches WHERE medicine_id = ? AND quantity > 0
+    ");
+    $expirySummary->execute([$medId]);
+    $expirySummary = $expirySummary->fetch();
+
+    // Purchase history
+    $purchasesHistory = $pdo->prepare("
+        SELECT p.purchase_number, p.purchase_date, pi.quantity, pi.purchase_price, pi.selling_price,
+               s.name AS supplier_name
+        FROM purchase_items pi
+        JOIN purchases p ON p.id = pi.purchase_id
+        LEFT JOIN suppliers s ON s.id = p.supplier_id
+        WHERE pi.medicine_id = ?
+        ORDER BY p.purchase_date DESC
+        LIMIT 50
+    ");
+    $purchasesHistory->execute([$medId]);
+    $purchasesHistory = $purchasesHistory->fetchAll();
+
+    // Sales history
+    $salesHistory = $pdo->prepare("
+        SELECT s.invoice_number, $day AS sale_date,
+               si.quantity, si.unit_price, si.subtotal, s.customer_name
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        WHERE si.medicine_id = ?
+        ORDER BY s.created_at DESC
+        LIMIT 50
+    ");
+    $salesHistory->execute([$medId]);
+    $salesHistory = $salesHistory->fetchAll();
+
+    // Returns history
+    $returnsHistory = $pdo->prepare("
+        SELECT sr.quantity, sr.amount, sr.reason, sr.created_at,
+               s.invoice_number
+        FROM sale_returns sr
+        LEFT JOIN sales s ON s.id = sr.sale_id
+        WHERE sr.medicine_id = ?
+        ORDER BY sr.created_at DESC
+        LIMIT 50
+    ");
+    $returnsHistory->execute([$medId]);
+    $returnsHistory = $returnsHistory->fetchAll();
+
+    // Stock changes (purchases +, sales -, returns +)
+    $stockChanges = $pdo->prepare("
+        SELECT 'Purchase' AS type, pi.quantity, p.purchase_date AS date, p.purchase_number AS reference
+        FROM purchase_items pi
+        JOIN purchases p ON p.id = pi.purchase_id
+        WHERE pi.medicine_id = ?
+        UNION ALL
+        SELECT 'Sale' AS type, si.quantity, $day AS date, s.invoice_number AS reference
+        FROM sale_items si
+        JOIN sales s ON s.id = si.sale_id
+        WHERE si.medicine_id = ?
+        UNION ALL
+        SELECT 'Return' AS type, sr.quantity, date(sr.created_at, '+3 hours') AS date, s.invoice_number AS reference
+        FROM sale_returns sr
+        LEFT JOIN sales s ON s.id = sr.sale_id
+        WHERE sr.medicine_id = ?
+        ORDER BY date DESC
+        LIMIT 100
+    ");
+    $stockChanges->execute([$medId, $medId, $medId]);
+    $stockChanges = $stockChanges->fetchAll();
+
+    // Batch changes (when batches were created)
+    $batchChanges = $pdo->prepare("
+        SELECT b.batch_number, b.expiry_date,
+               COALESCE(b.quantity_received, b.quantity) AS qty_purchased,
+               b.created_at AS date,
+               p.purchase_number AS reference,
+               s.name AS supplier_name
+        FROM batches b
+        LEFT JOIN purchases p ON p.id = b.purchase_id
+        LEFT JOIN suppliers s ON s.id = b.supplier_id
+        WHERE b.medicine_id = ?
+        ORDER BY b.created_at DESC
+    ");
+    $batchChanges->execute([$medId]);
+    $batchChanges = $batchChanges->fetchAll();
+
+    // Price history
+    $priceHistory = $pdo->prepare("
+        SELECT b.batch_number, b.purchase_price, b.selling_price, b.created_at,
+               s.name AS supplier_name
+        FROM batches b
+        LEFT JOIN suppliers s ON s.id = b.supplier_id
+        WHERE b.medicine_id = ?
+        ORDER BY b.created_at ASC
+    ");
+    $priceHistory->execute([$medId]);
+    $priceHistory = $priceHistory->fetchAll();
+
     $gross = (float)$perf['revenue'] - (float)$perf['purchase_cost'];
     $margin = (float)$perf['revenue'] > 0 ? ($gross / (float)$perf['revenue']) * 100 : 0;
-    $months = max(1, (int)((strtotime($to) - strtotime($from)) / 86400 / 30) + 1);
+    $days = max(1, (int)((strtotime($to) - strtotime($from)) / 86400) + 1);
+    $months = max(1, (int)($days / 30) + 1);
+    $avgDaily = $days > 0 ? (float)$perf['qty_sold'] / $days : 0;
 
     return [
         'medicine'  => $med,
@@ -611,13 +784,26 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
         'gross'     => $gross,
         'margin'    => $margin,
         'avg_monthly' => (float)$perf['qty_sold'] / $months,
+        'avg_daily' => $avgDaily,
         'trend'     => $trend,
+        'trend_weekly' => $trendWeekly,
+        'trend_monthly' => $trendMonthly,
+        'trend_yearly' => $trendYearly,
         'batches'   => $batches,
+        'batch_performance' => $batchPerf,
         'payments'  => $paySplit,
         'top_customers' => $topCust->fetchAll(),
         'main_supplier' => $supplier->fetch(),
         'expired_stock' => $expired,
         'near_expiry_stock' => $nearExpiry,
+        'batch_count' => $batchCount,
+        'expiry_summary' => $expirySummary,
+        'purchases_history' => $purchasesHistory,
+        'sales_history' => $salesHistory,
+        'returns_history' => $returnsHistory,
+        'stock_changes' => $stockChanges,
+        'batch_changes' => $batchChanges,
+        'price_history' => $priceHistory,
     ];
 }
 
@@ -625,12 +811,17 @@ function reportSearchProducts(PDO $pdo, string $q, int $limit = 20): array {
     if (strlen(trim($q)) < 1) return [];
     $like = '%' . trim($q) . '%';
     $stmt = $pdo->prepare("
-        SELECT id, name, generic_name, barcode, sku
-        FROM medicines
-        WHERE name LIKE ? OR generic_name LIKE ? OR barcode LIKE ? OR sku LIKE ?
-        ORDER BY name LIMIT $limit
+        SELECT DISTINCT m.id, m.name, m.generic_name, m.barcode, m.sku,
+               COALESCE(c.name, 'Uncategorized') AS category,
+               COALESCE(st.stock, 0) AS current_stock
+        FROM medicines m
+        LEFT JOIN categories c ON c.id = m.category_id
+        LEFT JOIN batches b ON b.medicine_id = m.id
+        LEFT JOIN (SELECT medicine_id, SUM(quantity) AS stock FROM batches GROUP BY medicine_id) st ON st.medicine_id = m.id
+        WHERE m.name LIKE ? OR m.generic_name LIKE ? OR m.barcode LIKE ? OR m.sku LIKE ? OR b.batch_number LIKE ?
+        ORDER BY m.name LIMIT $limit
     ");
-    $stmt->execute([$like, $like, $like, $like]);
+    $stmt->execute([$like, $like, $like, $like, $like]);
     return $stmt->fetchAll();
 }
 
@@ -721,6 +912,50 @@ function reportInsights(PDO $pdo, array $dates, array $filters): array {
     return $insights;
 }
 
+function reportSlowMovingProducts(PDO $pdo, array $dates, array $filters, int $limit = 50): array {
+    $day = reportLocalDateExpr('s');
+    $from = $dates['from'];
+    $to = $dates['to'];
+
+    $extraWhere = '';
+    $extraParams = [];
+    if ($filters['category']) {
+        $extraWhere .= ' AND m.category_id = ?';
+        $extraParams[] = $filters['category'];
+    }
+    if ($filters['supplier']) {
+        $extraWhere .= ' AND EXISTS (SELECT 1 FROM batches sb WHERE sb.medicine_id = m.id AND sb.supplier_id = ?)';
+        $extraParams[] = $filters['supplier'];
+    }
+
+    $sql = "
+        SELECT m.id, m.name, COALESCE(c.name, 'Uncategorized') AS category,
+               COALESCE(stock.total, 0) AS current_stock,
+               COALESCE(sold.qty, 0) AS units_sold,
+               sold.last_sale_date,
+               COALESCE(stock.total, 0) * COALESCE(stock.avg_cost, 0) AS stock_value
+        FROM medicines m
+        LEFT JOIN categories c ON c.id = m.category_id
+        LEFT JOIN (
+            SELECT medicine_id, SUM(quantity) AS total, AVG(purchase_price) AS avg_cost
+            FROM batches WHERE quantity > 0 GROUP BY medicine_id
+        ) stock ON stock.medicine_id = m.id
+        LEFT JOIN (
+            SELECT si.medicine_id, SUM(si.quantity) AS qty, MAX($day) AS last_sale_date
+            FROM sale_items si
+            JOIN sales s ON s.id = si.sale_id
+            WHERE $day BETWEEN ? AND ?
+            GROUP BY si.medicine_id
+        ) sold ON sold.medicine_id = m.id
+        WHERE COALESCE(stock.total, 0) > 0 $extraWhere
+        ORDER BY COALESCE(sold.qty, 0) ASC, stock.total DESC
+        LIMIT $limit
+    ";
+    $stmt = $pdo->prepare($sql);
+    $stmt->execute(array_merge([$from, $to], $extraParams));
+    return $stmt->fetchAll();
+}
+
 function reportExportCsv(string $filename, array $headers, array $rows): void {
     header('Content-Type: text/csv; charset=utf-8');
     header('Content-Disposition: attachment; filename="' . $filename . '"');
@@ -760,4 +995,412 @@ function reportNavItems(): array {
         ['page' => 'report_customers',  'label' => 'Customers',          'icon' => 'users'],
         ['page' => 'report_purchases',  'label' => 'Purchases',          'icon' => 'package-open'],
     ];
+}
+
+/* ─── SALES REPORT (report_sales.php) ────────────────────────────────────── */
+
+/** Date presets offered on the Sales Report page (Today / This Week / This Month / Last 30 Days / This Year / Custom). */
+function reportSalesDatePresets(): array {
+    return [
+        'today'      => 'Today',
+        'this_week'  => 'This Week',
+        'this_month' => 'This Month',
+        'last30'     => 'Last 30 Days',
+        'this_year'  => 'This Year',
+        'custom'     => 'Custom Range',
+    ];
+}
+
+/** Format an ISO 'YYYY-Www' weekly label as the Monday date of that week. */
+function reportWeeklyLabel(string $yw): string {
+    if (preg_match('/^(\d{4})-W(\d{2})$/', $yw, $m)) {
+        $d = new DateTime();
+        $d->setISODate((int)$m[1], (int)$m[2], 1);
+        return $d->format('M j');
+    }
+    return $yw;
+}
+
+/**
+ * Main summary KPIs for the Sales Report: revenue (gross), transactions,
+ * units sold, average sale value, discount, tax, returns and net sales.
+ * Net sales follows the app-wide convention: total_amount - discount.
+ */
+function reportSalesSummary(PDO $pdo, array $dates, array $filters): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $day  = reportLocalDateExpr('s');
+    $ctx  = reportBuildSalesContext($filters);
+    $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+    $params = array_merge([$from, $to], $ctx['params']);
+
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) AS transactions,
+               COALESCE(SUM(total_amount), 0) AS revenue,
+               COALESCE(SUM(discount), 0) AS discount,
+               COALESCE(SUM(tax), 0) AS tax,
+               COALESCE(SUM(total_amount - discount), 0) AS net
+        FROM (
+            SELECT DISTINCT s.id, s.total_amount, s.discount, s.tax
+            FROM sales s {$ctx['joins']}
+            WHERE $day BETWEEN ? AND ? $extra
+        ) t
+    ");
+    $stmt->execute($params);
+    $s = $stmt->fetch();
+
+    $itemCtx = reportItemFilterContext($filters, $from, $to);
+    $units = reportFetchScalar($pdo, "
+        SELECT COALESCE(SUM(si.quantity), 0)
+        FROM sale_items si
+        {$itemCtx['joins']}
+        WHERE {$itemCtx['where']}
+    ", $itemCtx['params']);
+
+    $returns = reportSalesReturns($pdo, $dates, $filters);
+
+    $transactions = (int)$s['transactions'];
+    $net          = (float)$s['net'];
+    return [
+        'revenue'      => (float)$s['revenue'],
+        'transactions' => $transactions,
+        'units'        => $units,
+        'avg_sale'     => $transactions > 0 ? $net / $transactions : 0.0,
+        'discount'     => (float)$s['discount'],
+        'tax'          => (float)$s['tax'],
+        'returns'      => (float)$returns['amount'],
+        'net'          => $net,
+    ];
+}
+
+/** Sales revenue over time, grouped by day / ISO week / month / year (net = total_amount - discount). */
+function reportSalesTrend(PDO $pdo, array $dates, array $filters, string $view = 'daily'): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $day  = reportLocalDateExpr('s');
+    $ctx  = reportBuildSalesContext($filters);
+    $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+
+    $labelExpr = match ($view) {
+        'weekly'  => "strftime('%Y-W%W', datetime(s.created_at, '+3 hours'))",
+        'monthly' => "strftime('%Y-%m', datetime(s.created_at, '+3 hours'))",
+        'yearly'  => "strftime('%Y', datetime(s.created_at, '+3 hours'))",
+        default   => $day,
+    };
+
+    $stmt = $pdo->prepare("
+        SELECT label, COUNT(*) AS transactions, SUM(net) AS revenue
+        FROM (
+            SELECT DISTINCT s.id, $labelExpr AS label, (s.total_amount - s.discount) AS net
+            FROM sales s {$ctx['joins']}
+            WHERE $day BETWEEN ? AND ? $extra
+        ) t
+        GROUP BY label ORDER BY label ASC
+    ");
+    $stmt->execute(array_merge([$from, $to], $ctx['params']));
+    return $stmt->fetchAll();
+}
+
+/** Per-day sales breakdown: transactions, units, revenue (gross), discount, tax, net sales. */
+function reportSalesDaily(PDO $pdo, array $dates, array $filters): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $day  = reportLocalDateExpr('s');
+    $ctx  = reportBuildSalesContext($filters);
+    $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+    $params = array_merge([$from, $to], $ctx['params']);
+
+    $stmt = $pdo->prepare("
+        SELECT day, COUNT(*) AS transactions,
+               SUM(total_amount) AS revenue,
+               SUM(discount) AS discount,
+               SUM(tax) AS tax,
+               SUM(total_amount - discount) AS net
+        FROM (
+            SELECT DISTINCT s.id, $day AS day, s.total_amount, s.discount, s.tax
+            FROM sales s {$ctx['joins']}
+            WHERE $day BETWEEN ? AND ? $extra
+        ) t
+        GROUP BY day ORDER BY day DESC
+    ");
+    $stmt->execute($params);
+    $rows = $stmt->fetchAll();
+
+    $itemCtx = reportItemFilterContext($filters, $from, $to);
+    $uStmt = $pdo->prepare("
+        SELECT " . reportLocalDateExpr('s') . " AS day, SUM(si.quantity) AS units
+        FROM sale_items si
+        {$itemCtx['joins']}
+        WHERE {$itemCtx['where']}
+        GROUP BY day
+    ");
+    $uStmt->execute($itemCtx['params']);
+    $unitsByDay = [];
+    foreach ($uStmt->fetchAll() as $u) $unitsByDay[$u['day']] = (float)$u['units'];
+    foreach ($rows as &$r) $r['units'] = $unitsByDay[$r['day']] ?? 0.0;
+    unset($r);
+    return $rows;
+}
+
+/** Payment report: Cash, CBE, Abyssinia, Telebirr and Credit with txns, amount and % of total. */
+function reportSalesPayments(PDO $pdo, array $dates, array $filters): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $sub = reportFilteredSalesSubquery($filters, $from, $to, 's.id, s.payment_method, (s.total_amount - s.discount) AS net');
+    $stmt = $pdo->prepare("
+        SELECT payment_method, COUNT(*) AS transactions, SUM(net) AS amount
+        FROM ({$sub['sql']}) t GROUP BY payment_method
+    ");
+    $stmt->execute($sub['params']);
+
+    $byMethod = [];
+    foreach ($stmt->fetchAll() as $r) $byMethod[$r['payment_method']] = $r;
+
+    $out = [];
+    foreach (posPaymentMethods() as $key => $label) {
+        $row = $byMethod[$key] ?? null;
+        $out[] = [
+            'method'       => $key,
+            'label'        => $label,
+            'transactions' => (int)($row['transactions'] ?? 0),
+            'amount'       => (float)($row['amount'] ?? 0),
+        ];
+    }
+    $total = array_sum(array_column($out, 'amount'));
+    foreach ($out as &$r) $r['pct'] = $total > 0 ? ($r['amount'] / $total) * 100 : 0.0;
+    unset($r);
+    return $out;
+}
+
+/** Customer sales: transactions, units, total spent and credit amount per customer. */
+function reportSalesCustomers(PDO $pdo, array $dates, array $filters): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $day  = reportLocalDateExpr('s');
+    $label = "COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name, 'Unknown')";
+    $ctx  = reportBuildSalesContext($filters);
+    $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+
+    $stmt = $pdo->prepare("
+        SELECT label, COUNT(*) AS transactions,
+               SUM(net) AS spent,
+               COALESCE(SUM(CASE WHEN is_credit THEN net END), 0) AS credit_amount
+        FROM (
+            SELECT DISTINCT s.id, $label AS label,
+                   (s.total_amount - s.discount) AS net,
+                   CASE WHEN (s.sale_type = 'credit' OR s.payment_method = 'credit') THEN 1 ELSE 0 END AS is_credit
+            FROM sales s {$ctx['joins']}
+            WHERE $day BETWEEN ? AND ? $extra
+        ) t
+        GROUP BY label ORDER BY spent DESC
+    ");
+    $stmt->execute(array_merge([$from, $to], $ctx['params']));
+    $rows = $stmt->fetchAll();
+
+    $itemCtx = reportItemFilterContext($filters, $from, $to);
+    $custJoin = str_contains($itemCtx['joins'], 'customers cust') ? '' : "\nLEFT JOIN customers cust ON cust.id = s.customer_id";
+    $uStmt = $pdo->prepare("
+        SELECT $label AS label, SUM(si.quantity) AS units
+        FROM sale_items si
+        {$itemCtx['joins']}$custJoin
+        WHERE {$itemCtx['where']}
+        GROUP BY label
+    ");
+    $uStmt->execute($itemCtx['params']);
+    $unitsByLabel = [];
+    foreach ($uStmt->fetchAll() as $u) $unitsByLabel[$u['label']] = (float)$u['units'];
+    foreach ($rows as &$r) $r['units'] = $unitsByLabel[$r['label']] ?? 0.0;
+    unset($r);
+    return $rows;
+}
+
+/** Cashier sales: transactions, units sold, total sales, discounts and net sales per cashier. */
+function reportSalesCashiers(PDO $pdo, array $dates, array $filters): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $day  = reportLocalDateExpr('s');
+    $ctx  = reportBuildSalesContext($filters);
+    $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+    $joins = $ctx['joins'] . "\nLEFT JOIN users u ON u.id = s.user_id";
+
+    $stmt = $pdo->prepare("
+        SELECT t.label,
+               COUNT(*) AS transactions,
+               SUM(t.total_amount) AS total_sales,
+               SUM(t.discount) AS discount,
+               SUM(t.total_amount - t.discount) AS net
+        FROM (
+            SELECT DISTINCT s.id, s.user_id, COALESCE(u.full_name, 'Unknown') AS label,
+                   s.total_amount, s.discount
+            FROM sales s $joins
+            WHERE $day BETWEEN ? AND ? $extra
+        ) t
+        GROUP BY t.user_id ORDER BY net DESC
+    ");
+    $stmt->execute(array_merge([$from, $to], $ctx['params']));
+    $rows = $stmt->fetchAll();
+
+    $itemCtx = reportItemFilterContext($filters, $from, $to);
+    $uStmt = $pdo->prepare("
+        SELECT COALESCE(u.full_name, 'Unknown') AS label, SUM(si.quantity) AS units
+        FROM sale_items si
+        {$itemCtx['joins']}
+        LEFT JOIN users u ON u.id = s.user_id
+        WHERE {$itemCtx['where']}
+        GROUP BY label
+    ");
+    $uStmt->execute($itemCtx['params']);
+    $unitsByLabel = [];
+    foreach ($uStmt->fetchAll() as $u) $unitsByLabel[$u['label']] = (float)$u['units'];
+    foreach ($rows as &$r) $r['units'] = $unitsByLabel[$r['label']] ?? 0.0;
+    unset($r);
+    return $rows;
+}
+
+/**
+ * Category sales bucketed into Medication / Cosmetic / Medical Equipment / Other,
+ * with transactions, units, revenue and profit (revenue - cost of goods sold).
+ */
+function reportSalesCategories(PDO $pdo, array $dates, array $filters): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $itemCtx = reportItemFilterContext($filters, $from, $to);
+    $stmt = $pdo->prepare("
+        SELECT CASE
+                 WHEN LOWER(COALESCE(m.product_type, c.product_type, '')) = 'cosmetic' THEN 'Cosmetic'
+                 WHEN LOWER(COALESCE(m.product_type, c.product_type, '')) = 'equipment' THEN 'Medical Equipment'
+                 WHEN LOWER(COALESCE(c.name, '')) LIKE '%cosmetic%' THEN 'Cosmetic'
+                 WHEN LOWER(COALESCE(c.name, '')) LIKE '%equipment%' OR LOWER(COALESCE(c.name, '')) LIKE '%device%' THEN 'Medical Equipment'
+                 WHEN LOWER(COALESCE(c.name, '')) = 'other' OR m.category_id IS NULL THEN 'Other'
+                 ELSE 'Medication'
+               END AS bucket,
+               COUNT(DISTINCT s.id) AS transactions,
+               SUM(si.quantity) AS units,
+               SUM(si.subtotal) AS revenue,
+               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
+        FROM sale_items si
+        {$itemCtx['joins']}
+        LEFT JOIN categories c ON c.id = m.category_id
+        WHERE {$itemCtx['where']}
+        GROUP BY bucket
+    ");
+    $stmt->execute($itemCtx['params']);
+    $byBucket = [];
+    foreach ($stmt->fetchAll() as $r) $byBucket[$r['bucket']] = $r;
+
+    $out = [];
+    foreach (['Medication', 'Cosmetic', 'Medical Equipment', 'Other'] as $bucket) {
+        $row = $byBucket[$bucket] ?? null;
+        $out[] = [
+            'category'     => $bucket,
+            'transactions' => (int)($row['transactions'] ?? 0),
+            'units'        => (float)($row['units'] ?? 0),
+            'revenue'      => (float)($row['revenue'] ?? 0),
+            'profit'       => (float)($row['profit'] ?? 0),
+        ];
+    }
+    return $out;
+}
+
+/** Returns summary: returned transactions, returned units and returned amount. */
+function reportSalesReturns(PDO $pdo, array $dates, array $filters): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $where  = ["date(sr.created_at, '+3 hours') BETWEEN ? AND ?"];
+    $params = [$from, $to];
+    $joins  = [];
+
+    if ($filters['category']) {
+        $joins[] = 'JOIN medicines mr ON mr.id = sr.medicine_id';
+        $where[] = 'mr.category_id = ?';
+        $params[] = $filters['category'];
+    }
+    if ($filters['customer']) {
+        $joins[] = 'LEFT JOIN customers cust ON cust.id = s.customer_id';
+        $where[] = "(COALESCE(NULLIF(TRIM(s.customer_name), ''), cust.full_name) LIKE ? OR cust.phone LIKE ?)";
+        $like = '%' . $filters['customer'] . '%';
+        $params[] = $like;
+        $params[] = $like;
+    }
+    if ($filters['cashier']) {
+        $where[] = 's.user_id = ?';
+        $params[] = $filters['cashier'];
+    }
+    if ($filters['payment_method']) {
+        $where[] = 's.payment_method = ?';
+        $params[] = $filters['payment_method'];
+    }
+    if ($filters['sales_type'] === 'credit') {
+        $where[] = "(s.sale_type = 'credit' OR s.payment_method = 'credit')";
+    } elseif ($filters['sales_type'] === 'cash') {
+        $where[] = "(s.sale_type = 'cash' OR (s.payment_method IS NOT NULL AND s.payment_method != 'credit' AND COALESCE(s.sale_type, 'cash') != 'credit'))";
+    } elseif ($filters['sales_type']) {
+        $where[] = 's.sale_type = ?';
+        $params[] = $filters['sales_type'];
+    }
+    if ($filters['branch']) {
+        $where[] = 's.branch_id = ?';
+        $params[] = $filters['branch'];
+    }
+
+    $stmt = $pdo->prepare("
+        SELECT COUNT(DISTINCT sr.sale_id) AS transactions,
+               COALESCE(SUM(sr.quantity), 0) AS units,
+               COALESCE(SUM(sr.amount), 0) AS amount
+        FROM sale_returns sr
+        JOIN sales s ON s.id = sr.sale_id
+        " . ($joins ? implode("\n", array_unique($joins)) : '') . "
+        WHERE " . implode(' AND ', $where) . "
+    ");
+    $stmt->execute($params);
+    $r = $stmt->fetch();
+    return [
+        'transactions' => (int)$r['transactions'],
+        'units'        => (float)$r['units'],
+        'amount'       => (float)$r['amount'],
+    ];
+}
+
+/** Sales history rows (every sale matching the filters), newest first. No expiry/stock details. */
+function reportSalesHistory(PDO $pdo, array $dates, array $filters, int $limit = 50, int $offset = 0): array {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $day  = reportLocalDateExpr('s');
+    $ctx  = reportBuildSalesContext($filters);
+    $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+    $joins = $ctx['joins'] . "\nLEFT JOIN users u ON u.id = s.user_id";
+    $itemJoin = str_contains($ctx['joins'], 'JOIN sale_items si') ? '' : "\nLEFT JOIN sale_items si ON si.sale_id = s.id";
+
+    $stmt = $pdo->prepare("
+        SELECT s.id, s.invoice_number, s.created_at, s.customer_name, s.customer_id,
+               s.total_amount, s.discount, s.tax, s.paid_amount, s.payment_method,
+               s.payment_status, s.sale_type,
+               COALESCE(u.full_name, 'Unknown') AS cashier,
+               COUNT(si.id) AS items,
+               COALESCE(SUM(si.quantity), 0) AS units
+        FROM sales s
+        $joins$itemJoin
+        WHERE $day BETWEEN ? AND ? $extra
+        GROUP BY s.id
+        ORDER BY s.created_at DESC
+        LIMIT $limit OFFSET $offset
+    ");
+    $stmt->execute(array_merge([$from, $to], $ctx['params']));
+    return $stmt->fetchAll();
+}
+
+function reportSalesHistoryCount(PDO $pdo, array $dates, array $filters): int {
+    $from = $dates['from'];
+    $to   = $dates['to'];
+    $day  = reportLocalDateExpr('s');
+    $ctx  = reportBuildSalesContext($filters);
+    $extra = $ctx['where'] ? ' AND ' . implode(' AND ', $ctx['where']) : '';
+    $stmt = $pdo->prepare("
+        SELECT COUNT(*) FROM (
+            SELECT DISTINCT s.id FROM sales s {$ctx['joins']}
+            WHERE $day BETWEEN ? AND ? $extra
+        ) t
+    ");
+    $stmt->execute(array_merge([$from, $to], $ctx['params']));
+    return (int)$stmt->fetchColumn();
 }

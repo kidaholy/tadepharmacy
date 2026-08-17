@@ -1,0 +1,127 @@
+[Mon Aug 17 13:55:36 2026] PHP 8.5.6 Development Server (http://127.0.0.1:8000) started
+[Mon Aug 17 13:56:36 2026] 127.0.0.1:50573 Accepted
+[Mon Aug 17 13:56:36 2026] 127.0.0.1:50573 [302]: GET /index.php
+[Mon Aug 17 13:56:36 2026] 127.0.0.1:50573 Closing
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50574 Accepted
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50574 [200]: GET /login.php
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50574 Closing
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50575 Accepted
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50575 [302]: GET /login.php
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50575 Closing
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50576 Accepted
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50576 [200]: GET /index.php
+[Mon Aug 17 13:56:47 2026] 127.0.0.1:50576 Closing
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50577 Accepted
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50578 Accepted
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50577 [200]: GET /assets/style.css?v=1786963751
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50579 Accepted
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50578 [200]: GET /public/tade%20pharmacy.jpeg
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50579 [200]: GET /assets/app.js
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50577 Closing
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50578 Closing
+[Mon Aug 17 13:56:48 2026] 127.0.0.1:50579 Closing
+[Mon Aug 17 13:56:49 2026] 127.0.0.1:50580 Accepted
+[Mon Aug 17 13:56:49 2026] 127.0.0.1:50580 [200]: GET /notify_tick.php
+[Mon Aug 17 13:56:49 2026] 127.0.0.1:50580 Closing
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50583 Accepted
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50583 [200]: GET /pos.php
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50583 Closing
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50584 Accepted
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50585 Accepted
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50586 Accepted
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50584 [200]: GET /assets/style.css?v=1786963751
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50585 [200]: GET /public/tade%20pharmacy.jpeg
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50586 [200]: GET /assets/app.js
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50584 Closing
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50585 Closing
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50586 Closing
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50587 Accepted
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50587 [200]: GET /notify_tick.php
+[Mon Aug 17 13:56:57 2026] 127.0.0.1:50587 Closing
+[Mon Aug 17 13:57:10 2026] 127.0.0.1:50588 Accepted
+[Mon Aug 17 13:57:11 2026] 127.0.0.1:50588 [200]: GET /login.php
+[Mon Aug 17 13:57:11 2026] 127.0.0.1:50588 Closing
+[Mon Aug 17 13:58:57 2026] 127.0.0.1:56400 Accepted
+[Mon Aug 17 13:58:57 2026] 127.0.0.1:56400 [200]: GET /notify_tick.php
+[Mon Aug 17 13:58:57 2026] 127.0.0.1:56400 Closing
+[Mon Aug 17 14:00:57 2026] 127.0.0.1:50865 Accepted
+[Mon Aug 17 14:00:57 2026] 127.0.0.1:50865 [200]: GET /notify_tick.php
+[Mon Aug 17 14:00:57 2026] 127.0.0.1:50865 Closing
+[Mon Aug 17 14:02:57 2026] 127.0.0.1:56030 Accepted
+[Mon Aug 17 14:02:57 2026] 127.0.0.1:56030 [200]: GET /notify_tick.php
+[Mon Aug 17 14:02:57 2026] 127.0.0.1:56030 Closing
+[Mon Aug 17 14:04:57 2026] 127.0.0.1:52957 Accepted
+[Mon Aug 17 14:04:57 2026] 127.0.0.1:52957 [200]: GET /notify_tick.php
+[Mon Aug 17 14:04:57 2026] 127.0.0.1:52957 Closing
+[Mon Aug 17 14:06:57 2026] 127.0.0.1:63510 Accepted
+[Mon Aug 17 14:06:57 2026] 127.0.0.1:63510 [200]: GET /notify_tick.php
+[Mon Aug 17 14:06:57 2026] 127.0.0.1:63510 Closing
+[Mon Aug 17 14:09:15 2026] 127.0.0.1:59120 Accepted
+[Mon Aug 17 14:09:15 2026] 127.0.0.1:59120 [200]: GET /notify_tick.php
+[Mon Aug 17 14:09:15 2026] 127.0.0.1:59120 Closing
+[Mon Aug 17 14:11:15 2026] 127.0.0.1:62121 Accepted
+[Mon Aug 17 14:11:15 2026] 127.0.0.1:62121 [200]: GET /notify_tick.php
+[Mon Aug 17 14:11:15 2026] 127.0.0.1:62121 Closing
+[Mon Aug 17 14:13:15 2026] 127.0.0.1:56554 Accepted
+[Mon Aug 17 14:13:15 2026] 127.0.0.1:56554 [200]: GET /notify_tick.php
+[Mon Aug 17 14:13:15 2026] 127.0.0.1:56554 Closing
+[Mon Aug 17 14:20:21 2026] 127.0.0.1:59883 Accepted
+[Mon Aug 17 14:20:21 2026] 127.0.0.1:59883 [200]: GET /notify_tick.php
+[Mon Aug 17 14:20:21 2026] 127.0.0.1:59883 Closing
+[Mon Aug 17 14:20:57 2026] 127.0.0.1:60640 Accepted
+[Mon Aug 17 14:20:57 2026] 127.0.0.1:60640 [200]: GET /notify_tick.php
+[Mon Aug 17 14:20:57 2026] 127.0.0.1:60640 Closing
+[Mon Aug 17 14:23:15 2026] 127.0.0.1:51246 Accepted
+[Mon Aug 17 14:23:15 2026] 127.0.0.1:51246 [200]: GET /notify_tick.php
+[Mon Aug 17 14:23:15 2026] 127.0.0.1:51246 Closing
+[Mon Aug 17 14:25:15 2026] 127.0.0.1:58905 Accepted
+[Mon Aug 17 14:25:15 2026] 127.0.0.1:58905 [200]: GET /notify_tick.php
+[Mon Aug 17 14:25:15 2026] 127.0.0.1:58905 Closing
+[Mon Aug 17 14:27:15 2026] 127.0.0.1:54056 Accepted
+[Mon Aug 17 14:27:15 2026] 127.0.0.1:54056 [200]: GET /notify_tick.php
+[Mon Aug 17 14:27:15 2026] 127.0.0.1:54056 Closing
+[Mon Aug 17 14:29:15 2026] 127.0.0.1:62431 Accepted
+[Mon Aug 17 14:29:15 2026] 127.0.0.1:62431 [200]: GET /notify_tick.php
+[Mon Aug 17 14:29:15 2026] 127.0.0.1:62431 Closing
+[Mon Aug 17 14:31:15 2026] 127.0.0.1:51696 Accepted
+[Mon Aug 17 14:31:15 2026] 127.0.0.1:51696 [200]: GET /notify_tick.php
+[Mon Aug 17 14:31:15 2026] 127.0.0.1:51696 Closing
+[Mon Aug 17 14:33:15 2026] 127.0.0.1:53307 Accepted
+[Mon Aug 17 14:33:15 2026] 127.0.0.1:53307 [200]: GET /notify_tick.php
+[Mon Aug 17 14:33:15 2026] 127.0.0.1:53307 Closing
+[Mon Aug 17 14:35:15 2026] 127.0.0.1:56341 Accepted
+[Mon Aug 17 14:35:15 2026] 127.0.0.1:56341 [200]: GET /notify_tick.php
+[Mon Aug 17 14:35:15 2026] 127.0.0.1:56341 Closing
+[Mon Aug 17 14:37:15 2026] 127.0.0.1:55341 Accepted
+[Mon Aug 17 14:37:15 2026] 127.0.0.1:55341 [200]: GET /notify_tick.php
+[Mon Aug 17 14:37:15 2026] 127.0.0.1:55341 Closing
+[Mon Aug 17 14:39:15 2026] 127.0.0.1:58927 Accepted
+[Mon Aug 17 14:39:15 2026] 127.0.0.1:58927 [200]: GET /notify_tick.php
+[Mon Aug 17 14:39:15 2026] 127.0.0.1:58927 Closing
+[Mon Aug 17 14:41:15 2026] 127.0.0.1:60012 Accepted
+[Mon Aug 17 14:41:15 2026] 127.0.0.1:60012 [200]: GET /notify_tick.php
+[Mon Aug 17 14:41:15 2026] 127.0.0.1:60012 Closing
+[Mon Aug 17 14:43:15 2026] 127.0.0.1:53132 Accepted
+[Mon Aug 17 14:43:15 2026] 127.0.0.1:53132 [200]: GET /notify_tick.php
+[Mon Aug 17 14:43:15 2026] 127.0.0.1:53132 Closing
+[Mon Aug 17 14:45:15 2026] 127.0.0.1:49771 Accepted
+[Mon Aug 17 14:45:15 2026] 127.0.0.1:49771 [200]: GET /notify_tick.php
+[Mon Aug 17 14:45:15 2026] 127.0.0.1:49771 Closing
+[Mon Aug 17 14:47:15 2026] 127.0.0.1:51386 Accepted
+[Mon Aug 17 14:47:15 2026] 127.0.0.1:51386 [200]: GET /notify_tick.php
+[Mon Aug 17 14:47:15 2026] 127.0.0.1:51386 Closing
+[Mon Aug 17 14:49:15 2026] 127.0.0.1:55511 Accepted
+[Mon Aug 17 14:49:15 2026] 127.0.0.1:55511 [200]: GET /notify_tick.php
+[Mon Aug 17 14:49:15 2026] 127.0.0.1:55511 Closing
+[Mon Aug 17 14:51:15 2026] 127.0.0.1:52750 Accepted
+[Mon Aug 17 14:51:15 2026] 127.0.0.1:52750 [200]: GET /notify_tick.php
+[Mon Aug 17 14:51:15 2026] 127.0.0.1:52750 Closing
+[Mon Aug 17 14:53:15 2026] 127.0.0.1:51596 Accepted
+[Mon Aug 17 14:53:15 2026] 127.0.0.1:51596 [200]: GET /notify_tick.php
+[Mon Aug 17 14:53:15 2026] 127.0.0.1:51596 Closing
+[Mon Aug 17 14:55:15 2026] 127.0.0.1:55392 Accepted
+[Mon Aug 17 14:55:15 2026] 127.0.0.1:55392 [200]: GET /notify_tick.php
+[Mon Aug 17 14:55:15 2026] 127.0.0.1:55392 Closing
+[Mon Aug 17 14:57:15 2026] 127.0.0.1:60330 Accepted
+[Mon Aug 17 14:57:15 2026] 127.0.0.1:60330 [200]: GET /notify_tick.php
+[Mon Aug 17 14:57:15 2026] 127.0.0.1:60330 Closing

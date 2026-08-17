@@ -145,8 +145,93 @@ function initReportCharts() {
   });
 }
 
+function switchProductTrend(view, btn) {
+  const el = document.getElementById('chartProductTrend');
+  if (!el || !el._chart) return;
+  const chart = el._chart;
+  const labels = JSON.parse(el.dataset[view + 'Labels'] || '[]');
+  const units = JSON.parse(el.dataset[view + 'Units'] || '[]');
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = units;
+  chart.update();
+  // Update active button state
+  document.querySelectorAll('[data-trend-view]').forEach(b => {
+    b.classList.remove('btn-primary');
+    b.classList.add('btn-ghost');
+  });
+  btn.classList.remove('btn-ghost');
+  btn.classList.add('btn-primary');
+}
+
+function initProductTrendChart() {
+  const el = document.getElementById('chartProductTrend');
+  if (!el || typeof Chart === 'undefined') return;
+  const labels = JSON.parse(el.dataset.dailyLabels || '[]');
+  const units = JSON.parse(el.dataset.dailyUnits || '[]');
+  const chart = new Chart(el, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Units Sold',
+        data: units,
+        borderColor: '#2563eb',
+        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+        fill: true,
+        tension: 0.35,
+        pointRadius: 3
+      }]
+    },
+    options: chartDefaults()
+  });
+  el._chart = chart;
+}
+
+function initSalesTrendChart() {
+  const el = document.getElementById('chartSalesTrend');
+  if (!el || typeof Chart === 'undefined') return;
+  const labels = JSON.parse(el.dataset.dailyLabels || '[]');
+  const values = JSON.parse(el.dataset.dailyValues || '[]');
+  const chart = new Chart(el, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'Net Sales',
+        data: values,
+        borderColor: '#2563eb',
+        backgroundColor: 'rgba(37, 99, 235, 0.1)',
+        fill: true,
+        tension: 0.35,
+        pointRadius: 3
+      }]
+    },
+    options: chartDefaults()
+  });
+  el._chart = chart;
+}
+
+function switchSalesTrend(view, btn) {
+  const el = document.getElementById('chartSalesTrend');
+  if (!el || !el._chart) return;
+  const chart = el._chart;
+  const labels = JSON.parse(el.dataset[view + 'Labels'] || '[]');
+  const values = JSON.parse(el.dataset[view + 'Values'] || '[]');
+  chart.data.labels = labels;
+  chart.data.datasets[0].data = values;
+  chart.update();
+  document.querySelectorAll('[data-sales-trend-view]').forEach(b => {
+    b.classList.remove('btn-primary');
+    b.classList.add('btn-ghost');
+  });
+  btn.classList.remove('btn-ghost');
+  btn.classList.add('btn-primary');
+}
+
 window.addEventListener('load', () => {
   toggleCustomDates();
   initReportCharts();
+  initProductTrendChart();
+  initSalesTrendChart();
   if (typeof refreshIcons === 'function') refreshIcons();
 });

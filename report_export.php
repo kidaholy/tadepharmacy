@@ -14,16 +14,103 @@ $rows    = [];
 
 switch ($report) {
     case 'products':
-        $headers = ['Product', 'Category', 'Qty Sold', 'Revenue', 'Purchase Cost', 'Gross Profit', 'Current Stock'];
+        $headers = ['Product', 'Category', 'Units Sold', 'Revenue', 'Purchase Cost', 'Gross Profit', 'Profit %', 'Current Stock'];
         foreach (reportTopProducts($pdo, $dates, $filters, $_GET['sort'] ?? 'qty', 5000) as $p) {
-            $rows[] = [$p['name'], $p['category'], $p['qty_sold'], $p['revenue'], $p['purchase_cost'], $p['gross_profit'], $p['current_stock']];
+            $rows[] = [$p['name'], $p['category'], $p['qty_sold'], $p['revenue'], $p['purchase_cost'], $p['gross_profit'], number_format((float)$p['profit_margin'], 1) . '%', $p['current_stock']];
         }
         $filename = 'best-selling-products-' . $dates['from'] . '-' . $dates['to'];
+        break;
+
+    case 'product_detail':
+        $medId = (int)($_GET['med'] ?? 0);
+        if ($medId) {
+            $detail = reportProductDetail($pdo, $medId, $dates);
+            if ($detail) {
+                $m = $detail['medicine'];
+                $p = $detail['perf'];
+                $headers = ['Metric', 'Value'];
+                $rows = [
+                    ['Product Name', $m['name']],
+                    ['Generic Name', $m['generic_name'] ?? ''],
+                    ['Category', $m['category_name']],
+                    ['Barcode', $m['barcode'] ?? ''],
+                    ['SKU', $m['sku'] ?? ''],
+                    ['Current Stock', $m['current_stock']],
+                    ['Selling Price', $m['avg_sell_price']],
+                    ['Purchase Cost', $m['avg_buy_price']],
+                    ['Inventory Value', $m['inventory_value']],
+                    ['Units Sold', $p['qty_sold'] ?? 0],
+                    ['Revenue', $p['revenue'] ?? 0],
+                    ['Purchase Cost (Sales)', $p['purchase_cost'] ?? 0],
+                    ['Gross Profit', $detail['gross']],
+                    ['Profit Margin', number_format($detail['margin'], 1) . '%'],
+                    ['Transactions', $p['num_sales'] ?? 0],
+                    ['Avg Units/Day', number_format($detail['avg_daily'], 1)],
+                    ['Avg Monthly Sales', number_format($detail['avg_monthly'], 1)],
+                    ['Batch Count', $detail['batch_count']],
+                    ['Expired Stock', $detail['expired_stock']],
+                    ['Near Expiry Stock', $detail['near_expiry_stock']],
+                ];
+                $rows[] = ['', ''];
+                $rows[] = ['Batch Performance', ''];
+                $rows[] = ['Batch Number', 'Expiry', 'Qty Purchased', 'Qty Sold', 'Remaining', 'Sales Value'];
+                foreach ($detail['batch_performance'] as $b) {
+                    $rows[] = [$b['batch_number'], $b['expiry_date'], $b['qty_purchased'], $b['qty_sold'], $b['remaining'], $b['sales_value']];
+                }
+            }
+        }
+        $filename = 'product-detail-' . ($medId ?: 'unknown') . '-' . $dates['from'] . '-' . $dates['to'];
+        break;
+
+    case 'compare':
+        $compareIds = array_filter(array_map('intval', explode(',', $_GET['compare'] ?? '')));
+        $headers = ['Product', 'Units Sold', 'Revenue', 'Cost', 'Profit', 'Profit Margin', 'Current Stock'];
+        foreach ($compareIds as $cid) {
+            $d = reportProductDetail($pdo, $cid, $dates);
+            if ($d) {
+                $m = $d['medicine'];
+                $p = $d['perf'];
+                $rows[] = [$m['name'], $p['qty_sold'] ?? 0, $p['revenue'] ?? 0, $p['purchase_cost'] ?? 0, $d['gross'], number_format($d['margin'], 1) . '%', $m['current_stock']];
+            }
+        }
+        $filename = 'product-comparison-' . $dates['from'] . '-' . $dates['to'];
         break;
     case 'sales':
         $daily = reportDailyRevenue($pdo, $dates, $filters);
         $headers = ['Date', 'Orders', 'Revenue'];
         foreach ($daily as $d) $rows[] = [$d['day'], $d['orders'], $d['revenue']];
+        $filename = 'sales-report-' . $dates['from'] . '-' . $dates['to'];
+        break;
+    case 'sales_report':
+        $summary = reportSalesSummary($pdo, $dates, $filters);
+        $headers = ['Metric', 'Value'];
+        $rows = [
+            ['Total Revenue', $summary['revenue']],
+            ['Total Transactions', $summary['transactions']],
+            ['Total Units Sold', $summary['units']],
+            ['Average Sale Value', $summary['avg_sale']],
+            ['Total Discount', $summary['discount']],
+            ['Total Tax', $summary['tax']],
+            ['Total Returns', $summary['returns']],
+            ['Net Sales', $summary['net']],
+        ];
+        $rows[] = [];
+        $rows[] = ['Date', 'Invoice', 'Customer', 'Items', 'Units', 'Total', 'Discount', 'Tax', 'Payment Method', 'Cashier', 'Status'];
+        foreach (reportSalesHistory($pdo, $dates, $filters, 5000) as $r) {
+            $rows[] = [
+                date('Y-m-d H:i', strtotime($r['created_at'])),
+                $r['invoice_number'],
+                $r['customer_name'],
+                (int)$r['items'],
+                (int)$r['units'],
+                round((float)$r['total_amount'] - (float)$r['discount'] + (float)$r['tax'], 2),
+                (float)$r['discount'],
+                (float)$r['tax'],
+                reportPaymentMethods()[$r['payment_method']] ?? $r['payment_method'],
+                $r['cashier'],
+                $r['payment_status'] ? ucfirst($r['payment_status']) : '',
+            ];
+        }
         $filename = 'sales-report-' . $dates['from'] . '-' . $dates['to'];
         break;
     case 'payments':

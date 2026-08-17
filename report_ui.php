@@ -62,8 +62,8 @@ function reportActiveFilterChips(array $dates, array $filters, array $options): 
     return $chips;
 }
 
-function renderReportFilters(array $dates, array $filters, array $options, string $formAction = ''): void {
-    $presets = reportDatePresets();
+function renderReportFilters(array $dates, array $filters, array $options, string $formAction = '', ?array $presets = null, bool $showProduct = true, bool $showSupplier = true, string $exportReport = 'overview'): void {
+    $presets = $presets ?? reportDatePresets();
     $payments = reportPaymentMethods();
     $isCustom = $dates['preset'] === 'custom';
     $chips = reportActiveFilterChips($dates, $filters, $options);
@@ -90,6 +90,7 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
         <label>End Date</label>
         <input type="date" name="to" id="reportDateTo" value="<?= htmlspecialchars($dates['to']) ?>" <?= $isCustom ? '' : 'disabled' ?>>
       </div>
+      <?php if ($showProduct): ?>
       <div class="form-group">
         <label>Product</label>
         <select name="product">
@@ -99,6 +100,7 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
           <?php endforeach; ?>
         </select>
       </div>
+      <?php endif; ?>
       <div class="form-group">
         <label>Category</label>
         <select name="category">
@@ -108,6 +110,7 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
           <?php endforeach; ?>
         </select>
       </div>
+      <?php if ($showSupplier): ?>
       <div class="form-group">
         <label>Supplier</label>
         <select name="supplier">
@@ -117,6 +120,7 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
           <?php endforeach; ?>
         </select>
       </div>
+      <?php endif; ?>
       <div class="form-group">
         <label>Customer</label>
         <input type="text" name="customer" value="<?= htmlspecialchars($filters['customer']) ?>" placeholder="Customer name..." list="customerList">
@@ -162,7 +166,7 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
     <div class="report-filter-actions">
       <button type="submit" class="btn btn-primary"><i data-lucide="filter"></i> Apply Filter</button>
       <a href="<?= htmlspecialchars(basename($_SERVER['PHP_SELF'])) ?>" class="btn btn-ghost">Clear</a>
-      <?php renderReportExportButtons($dates, $filters); ?>
+      <?php renderReportExportButtons($dates, $filters, $exportReport); ?>
     </div>
   </form>
   <div class="report-active-filters" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
