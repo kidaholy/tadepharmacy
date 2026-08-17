@@ -9,7 +9,17 @@ $sort = $_GET['sort'] ?? 'qty';
 $page = max(1, (int)($_GET['page'] ?? 1));
 $medId = (int)($_GET['med'] ?? 0);
 $q     = trim($_GET['q'] ?? '');
-$compare = array_filter(array_map('intval', explode(',', $_GET['compare'] ?? '')));
+$compareRaw = $_GET['compare'] ?? '';
+if (is_array($compareRaw)) {
+    // Multi-select form submits compare[] as an array.
+    $compareSelected = array_map('intval', $compareRaw);
+} else {
+    // Comma-separated string (shared links / exports).
+    $compareSelected = array_map('intval', explode(',', (string)$compareRaw));
+}
+$compareSelected = array_values(array_unique(array_filter($compareSelected)));
+$compareSliced = count($compareSelected) > 5;
+$compare = array_slice($compareSelected, 0, 5);
 $historyTab = $_GET['history_tab'] ?? 'purchases';
 $perPage = 30;
 
@@ -499,6 +509,10 @@ renderSidebar();
     <button type="submit" class="btn btn-primary"><i data-lucide="layers"></i> Compare</button>
   </form>
 </div>
+
+<?php if ($compareSliced): ?>
+<p style="color:var(--warning);font-size:13px;padding:0 22px 14px;">Comparison is limited to 5 products — showing the first 5 selected.</p>
+<?php endif; ?>
 
 <?php if (count($compareData) >= 2): ?>
 <!-- Export buttons -->

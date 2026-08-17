@@ -63,7 +63,11 @@ switch ($report) {
         break;
 
     case 'compare':
-        $compareIds = array_filter(array_map('intval', explode(',', $_GET['compare'] ?? '')));
+        $cmpRaw = $_GET['compare'] ?? '';
+        $compareIds = is_array($cmpRaw)
+            ? array_map('intval', $cmpRaw)
+            : array_map('intval', explode(',', (string)$cmpRaw));
+        $compareIds = array_slice(array_values(array_unique(array_filter($compareIds))), 0, 5);
         $headers = ['Product', 'Units Sold', 'Revenue', 'Cost', 'Profit', 'Profit Margin', 'Current Stock'];
         foreach ($compareIds as $cid) {
             $d = reportProductDetail($pdo, $cid, $dates);
