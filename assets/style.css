@@ -790,8 +790,8 @@ input.expiry-bad { border-color: var(--danger); }
 /* ─── POS ────────────────────────────────────────────────── */
 .pos-layout { display: grid; grid-template-columns: 1fr 360px; gap: 20px; height: calc(100vh - 130px); }
 
-.pos-left { display: flex; flex-direction: column; gap: 16px; overflow: hidden; }
-.pos-right { display: flex; flex-direction: column; gap: 0; background: var(--bg-700); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; box-shadow: var(--shadow); }
+.pos-left { display: flex; flex-direction: column; gap: 16px; overflow: hidden; min-height: 0; }
+.pos-right { display: flex; flex-direction: column; gap: 0; background: var(--bg-700); border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; min-height: 0; box-shadow: var(--shadow); }
 
 .pos-search { position: relative; }
 .pos-search input { padding-left: 42px; }
@@ -826,7 +826,7 @@ input.expiry-bad { border-color: var(--danger); }
 
 .pos-cart-header { padding: 16px 18px; border-bottom: 1px solid var(--border); font-size: 14px; font-weight: 700; }
 
-.pos-cart-items { flex: 1; overflow-y: auto; padding: 10px; }
+.pos-cart-items { flex: 1; overflow-y: auto; min-height: 80px; padding: 10px; }
 
 .cart-item {
   display: flex; align-items: center; gap: 10px;
@@ -852,7 +852,13 @@ input.expiry-bad { border-color: var(--danger); }
 .pos-total-row { display: flex; justify-content: space-between; font-size: 13px; color: var(--text-200); margin-bottom: 8px; }
 .pos-total-row.grand { font-size: 18px; font-weight: 800; color: var(--text-100); border-top: 1px solid var(--border); padding-top: 10px; margin-top: 4px; }
 
-.pos-checkout { padding: 14px 18px; border-top: 1px solid var(--border); }
+.pos-checkout {
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+  overflow-y: auto;
+  min-height: 0; /* allow the checkout area to shrink so the expanded credit form scrolls */
+  max-height: 62%; /* keep the cart list visible while the credit form is open */
+}
 .pos-checkout .btn { width: 100%; justify-content: center; padding: 12px; font-size: 15px; }
 
 .pos-search-hint { font-size: 11px; color: var(--text-300); margin-top: 6px; }
