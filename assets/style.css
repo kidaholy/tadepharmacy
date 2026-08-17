@@ -855,6 +855,78 @@ input.expiry-bad { border-color: var(--danger); }
 .pos-checkout { padding: 14px 18px; border-top: 1px solid var(--border); }
 .pos-checkout .btn { width: 100%; justify-content: center; padding: 12px; font-size: 15px; }
 
+.pos-search-hint { font-size: 11px; color: var(--text-300); margin-top: 6px; }
+
+/* POS medicine groups & batch rows */
+.pos-med-group {
+  background: var(--bg-700);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.pos-med-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--bg-600);
+  border-bottom: 1px solid var(--border);
+}
+.pos-med-head-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pos-med-name { font-size: 13.5px; font-weight: 700; color: var(--text-100); }
+.pos-med-sub { font-size: 11px; color: var(--text-300); }
+.pos-med-stock { font-size: 11px; color: var(--text-300); white-space: nowrap; }
+.pos-batch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  transition: background var(--transition);
+}
+.pos-batch-row:last-child { border-bottom: none; }
+.pos-batch-row:hover { background: var(--bg-600); }
+.pos-batch-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.pos-batch-num { font-size: 12px; font-weight: 600; color: var(--text-200); }
+.pos-batch-exp, .pos-batch-stock { font-size: 11px; color: var(--text-300); }
+.pos-batch-price { font-size: 14px; font-weight: 700; color: var(--accent-dark); white-space: nowrap; display: flex; align-items: center; gap: 6px; }
+
+/* POS discount/tax inputs */
+.pos-discount-inputs { display: inline-flex; align-items: center; gap: 6px; }
+.pos-discount-inputs select, .pos-discount-inputs input { background: var(--bg-600); border: 1px solid var(--border-strong); color: var(--text-100); border-radius: 6px; }
+
+/* POS cart item extras */
+.cart-item-sub { font-size: 11px; color: var(--text-300); }
+.cart-item-meta { font-size: 10.5px; color: var(--text-300); margin: 2px 0; }
+.cart-item-line { display: flex; gap: 10px; font-size: 11px; color: var(--text-300); margin-top: 4px; }
+.cart-item-total { font-weight: 700; color: var(--text-100); }
+
+/* Payment method buttons */
+.pay-methods { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.pay-method-btn {
+  padding: 10px 8px;
+  font-size: 13px;
+  font-weight: 700;
+  border: 1.5px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--bg-600);
+  color: var(--text-200);
+  cursor: pointer;
+  text-align: center;
+  transition: all var(--transition);
+}
+.pay-method-btn:hover { border-color: var(--accent); color: var(--accent); }
+.pay-method-btn.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  box-shadow: 0 3px 10px rgba(37, 99, 235, 0.3);
+}
+.pay-method-btn.active:hover { color: #fff; }
+
 /* ─── GRID LAYOUT ────────────────────────────────────────── */
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
 .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }

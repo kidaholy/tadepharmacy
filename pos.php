@@ -6,44 +6,60 @@ require_once __DIR__ . '/notifications_lib.php';
 
 $pdo  = getDB();
 $error = '';
+$success = '';
 $preselectCustomer = (int)($_GET['customer_id'] ?? 0);
 
-$medsList   = fetchPosMedicines($pdo);
-$customers  = searchCustomers($pdo, '', 200);
+$catalog    = fetchPosCatalog($pdo);
+$customers  = searchCustomers($pdo, '', 500);
 $payMethods = posPaymentMethods();
+$payButtons = posPaymentButtonLabels();
+$taxDefault = (float)getSetting('tax_rate', '0');
+$currency   = getSetting('currency', 'ETB');
+
+$flash = flashGet();
+if ($flash && $flash['type'] === 'success') $success = $flash['message'];
+if (isset($_GET['done'])) $success = 'Sale completed successfully. The receipt is available from Sales History.';
 
 // ── Handle checkout ─────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $customerId     = (int)($_POST['customer_id'] ?? 0);
-    $discount       = max(0, (float)($_POST['discount'] ?? 0));
-    $payment        = $_POST['payment_method'] ?? 'cash';
-    $notes          = trim($_POST['notes'] ?? '');
-    $creditNotes    = trim($_POST['credit_notes'] ?? '');
-    $reference      = trim($_POST['payment_reference'] ?? '');
-    $dueDate        = trim($_POST['due_date'] ?? '');
-    $amountPaidIn   = max(0, (float)($_POST['amount_paid'] ?? 0));
-    $items          = json_decode($_POST['cart_json'] ?? '[]', true);
+    $customerId   = (int)($_POST['customer_id'] ?? 0);
+    $discountType = ($_POST['discount_type'] ?? 'amount') === 'percent' ? 'percent' : 'amount';
+    $discountRaw  = max(0, (float)($_POST['discount'] ?? 0));
+    $taxRate      = max(0, (float)($_POST['tax_rate'] ?? 0));
+    $payment      = $_POST['payment_method'] ?? 'cash';
+    $notes        = trim($_POST['notes'] ?? '');
+    $creditNotes  = trim($_POST['credit_notes'] ?? '');
+    $reference    = trim($_POST['payment_reference'] ?? '');
+    $dueDate      = trim($_POST['due_date'] ?? '');
+    $amountPaidIn = max(0, (float)($_POST['amount_paid'] ?? 0));
+    $items        = json_decode($_POST['cart_json'] ?? '[]', true);
 
     if (!isset($payMethods[$payment])) {
         $error = 'Invalid payment method selected.';
     } elseif (empty($items) || !is_array($items)) {
         $error = 'Cart is empty. Please add at least one medicine.';
     } elseif ($payment === 'credit' && !$customerId) {
-        $error = 'Credit sales are only available for registered customers. Please select or register a customer before completing the sale.';
+        $error = 'Credit sales require a registered customer. Select or register a customer before completing the sale.';
     } elseif ($payment === 'credit' && !$dueDate) {
         $error = 'Due date is required for credit sales.';
     } else {
         $customer = $customerId ? findCustomerById($pdo, $customerId) : null;
         if ($payment === 'credit' && !$customer) {
-            $error = 'Credit sales are only available for registered customers. Please select or register a customer before completing the sale.';
+            $error = 'Credit sales require a registered customer. Select or register a customer before completing the sale.';
         } else {
             $pdo->beginTransaction();
             try {
-                $lineItems = buildFefoLineItems($pdo, $items);
-                $total = array_sum(array_column($lineItems, 'subtotal'));
+                $lineItems = buildBatchLineItems($pdo, $items);
+                $subtotal  = array_sum(array_column($lineItems, 'subtotal'));
 
-                if ($discount > $total) $discount = $total;
-                $net = $total - $discount;
+                $discount = $discountRaw;
+                if ($discountType === 'percent') {
+                    $discount = round($subtotal * min($discountRaw, 100) / 100, 2);
+                }
+                if ($discount > $subtotal) $discount = $subtotal;
+                $discounted = round($subtotal - $discount, 2);
+                $tax        = round($discounted * min($taxRate, 100) / 100, 2);
+                $net        = round($discounted + $tax, 2);
 
                 if ($payment === 'credit') {
                     if ($customer['credit_limit'] > 0 && ((float)$customer['outstanding_balance'] + $net) > (float)$customer['credit_limit']) {
@@ -55,8 +71,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 }
 
                 $remaining = max(0, $net - $paid);
-                $status = computePaymentStatus($net, $paid, $payment);
-                $saleType = ($payment === 'credit') ? 'credit' : 'cash';
+                $status    = computePaymentStatus($net, $paid, $payment);
+                $saleType  = ($payment === 'credit') ? 'credit' : 'cash';
 
                 $custName  = $customer ? $customer['full_name'] : 'Walk-in Customer';
                 $custPhone = $customer ? $customer['phone'] : trim($_POST['customer_phone'] ?? '');
@@ -65,31 +81,42 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 $cashierId = currentUser()['id'] ?? null;
                 $allNotes  = trim($notes . ($creditNotes ? "\nCredit: $creditNotes" : ''));
 
+                // Prorate the invoice discount & tax onto each line for receipt/details display.
+                foreach ($lineItems as $k => $li) {
+                    $share = $subtotal > 0 ? ($li['subtotal'] / $subtotal) : 0;
+                    $lineDisc = round($discount * $share, 2);
+                    $lineTax  = round(($li['subtotal'] - $lineDisc) * min($taxRate, 100) / 100, 2);
+                    $lineItems[$k]['discount']   = $lineDisc;
+                    $lineItems[$k]['tax']        = $lineTax;
+                    $lineItems[$k]['line_total'] = round($li['subtotal'] - $lineDisc + $lineTax, 2);
+                }
+
                 $pdo->prepare("
                     INSERT INTO sales (
                         invoice_number, customer_id, customer_name, customer_phone,
-                        total_amount, discount, paid_amount, remaining_balance,
+                        total_amount, discount, tax, paid_amount, remaining_balance,
                         payment_method, payment_status, payment_reference,
                         notes, credit_notes, user_id, sale_type,
                         due_date, credit_due_date
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ")->execute([
                     $invoice, $customerId ?: null, $custName, $custPhone,
-                    $total, $discount, $paid, $remaining,
+                    $subtotal, $discount, $tax, $paid, $remaining,
                     $payment, $status, $reference ?: null,
-                    $notes, $creditNotes ?: null, $cashierId, $saleType,
+                    $allNotes, $creditNotes ?: null, $cashierId, $saleType,
                     $payment === 'credit' ? $dueDate : null,
                     $payment === 'credit' ? $dueDate : null,
                 ]);
                 $saleId = (int)$pdo->lastInsertId();
 
+                $insItem  = $pdo->prepare("INSERT INTO sale_items (sale_id, medicine_id, batch_id, quantity, unit_price, discount, tax, subtotal) VALUES (?,?,?,?,?,?,?,?)");
+                $updBatch = $pdo->prepare("UPDATE batches SET quantity = quantity - ? WHERE id = ?");
                 foreach ($lineItems as $li) {
-                    $pdo->prepare("
-                        INSERT INTO sale_items (sale_id, medicine_id, batch_id, quantity, unit_price, subtotal)
-                        VALUES (?,?,?,?,?,?)
-                    ")->execute([$saleId, $li['medicine_id'], $li['batch_id'], $li['qty'], $li['price'], $li['subtotal']]);
-                    $pdo->prepare("UPDATE batches SET quantity = quantity - ? WHERE id = ?")
-                        ->execute([$li['qty'], $li['batch_id']]);
+                    $insItem->execute([
+                        $saleId, $li['medicine_id'], $li['batch_id'], $li['qty'],
+                        $li['price'], $li['discount'], $li['tax'], $li['subtotal'],
+                    ]);
+                    $updBatch->execute([$li['qty'], $li['batch_id']]);
                     checkStockAlerts($pdo, $li['medicine_id']);
                 }
 
@@ -108,9 +135,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     notifyNewCreditSale($saleRow, $customer);
                 }
 
-                header("Location: receipt.php?id=$saleId");
+                // After the sale, either show the receipt preview (optionally auto-print)
+                // or return straight to the New Sale screen per Receipt Settings.
+                $showPreview = getSetting('receipt_show_preview', '1') === '1';
+                $autoPrint   = getSetting('receipt_auto_print', '1') === '1';
+                $printAfter  = getSetting('receipt_print_after_sale', '0') === '1';
+                if ($showPreview) {
+                    header('Location: receipt.php?id=' . $saleId . '&autoprint=' . (($autoPrint && $printAfter) ? '1' : '0') . '&back=pos');
+                } else {
+                    flashSet('success', 'Sale completed — invoice ' . $invoice . ' saved. Receipt available from Sales History.');
+                    header('Location: pos.php');
+                }
                 exit;
-            } catch (Exception $e) {
+            } catch (Throwable $e) {
                 $pdo->rollBack();
                 $error = 'Transaction failed: ' . $e->getMessage();
             }
@@ -126,6 +163,9 @@ renderSidebar();
 <?php renderTopbar('Point of Sale', 'New Sale Transaction'); ?>
 <div class="page-body" style="overflow:hidden;">
 
+<?php if ($success): ?>
+<div class="alert alert-success auto-hide" id="posSuccess"><i data-lucide="check-circle"></i><?= htmlspecialchars($success) ?></div>
+<?php endif; ?>
 <?php if ($error): ?>
 <div class="alert alert-danger" id="posError"><i data-lucide="x-circle"></i><?= htmlspecialchars($error) ?></div>
 <?php endif; ?>
@@ -134,33 +174,15 @@ renderSidebar();
   <div class="pos-left">
     <div class="pos-search">
       <div class="pos-search-icon"><i data-lucide="search"></i></div>
-      <input type="text" id="posSearch" placeholder="Search medicines..." oninput="filterMeds(this.value)">
+      <input type="text" id="posSearch" placeholder="Search brand, generic, strength, batch or barcode…" oninput="renderGrid(this.value)">
+      <div class="pos-search-hint" id="posSearchHint">Searching all batches · earliest expiry shown first</div>
     </div>
     <div class="pos-items-grid" id="medGrid">
-      <?php foreach ($medsList as $m):
-        $noExpiry = isNoExpiryDate($m['expiry_date'] ?? '');
-        $expDays = $noExpiry ? 99999 : ((strtotime($m['expiry_date']) - time()) / 86400);
-        $expLabel = (!$noExpiry && $expDays <= 30) ? '<span class="badge badge-orange" style="font-size:10px;">Exp soon</span>' : '';
-      ?>
-      <div class="med-card"
-           data-id="<?= $m['id'] ?>"
-           data-name="<?= htmlspecialchars($m['name'], ENT_QUOTES) ?>"
-           data-generic="<?= htmlspecialchars($m['generic_name'] ?? '', ENT_QUOTES) ?>"
-           data-price="<?= $m['selling_price'] ?>"
-           data-stock="<?= $m['stock'] ?>"
-           data-unit="<?= htmlspecialchars($m['unit'], ENT_QUOTES) ?>"
-           onclick="addToCart(this)">
-        <div class="med-card-name"><?= htmlspecialchars($m['name']) ?></div>
-        <div class="med-card-generic"><?= htmlspecialchars($m['generic_name'] ?: '') ?></div>
-        <div class="med-card-price"><?= getSetting('currency','ETB') ?> <?= number_format($m['selling_price'], 2) ?></div>
-        <div class="med-card-stock">Stock: <?= $m['stock'] ?> <?= htmlspecialchars($m['unit']) ?> <?= $expLabel ?></div>
+      <?php if (empty($catalog)): ?>
+      <div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--text-300);">
+        <p>No medicines available in stock.</p>
+        <a href="purchases.php?action=add" class="btn btn-primary" style="margin-top:14px;">Add Purchase/Stock</a>
       </div>
-      <?php endforeach; ?>
-      <?php if (empty($medsList)): ?>
-        <div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--text-300);">
-          <p>No medicines available in stock.</p>
-          <a href="purchases.php?action=add" class="btn btn-primary" style="margin-top:14px;">Add Purchase/Stock</a>
-        </div>
       <?php endif; ?>
     </div>
   </div>
@@ -172,25 +194,54 @@ renderSidebar();
     </div>
 
     <div class="pos-cart-total">
-      <div class="pos-total-row"><span>Subtotal</span><span id="subtotalVal">ETB 0.00</span></div>
+      <div class="pos-total-row"><span>Subtotal</span><span id="subtotalVal"><?= $currency ?> 0.00</span></div>
       <div class="pos-total-row">
         <span>Discount</span>
-        <span><input type="number" id="discountInput" value="0" min="0" step="0.01" style="width:90px;padding:4px 8px;font-size:13px;text-align:right;" onchange="recalc()"></span>
+        <span class="pos-discount-inputs">
+          <select id="discountType" onchange="renderCart()" style="width:74px;padding:4px 6px;font-size:12px;">
+            <option value="amount">ETB</option>
+            <option value="percent">%</option>
+          </select>
+          <input type="number" id="discountInput" value="0" min="0" step="0.01" style="width:84px;padding:4px 8px;font-size:13px;text-align:right;" oninput="renderCart()">
+        </span>
       </div>
-      <div class="pos-total-row grand"><span>TOTAL</span><span id="totalVal">ETB 0.00</span></div>
+      <div class="pos-total-row"><span>Discounted Subtotal</span><span id="discountedVal"><?= $currency ?> 0.00</span></div>
+      <div class="pos-total-row">
+        <span>Tax <span style="color:var(--text-300);font-weight:400;">(%)</span></span>
+        <span>
+          <input type="number" id="taxRateInput" value="<?= htmlspecialchars(number_format($taxDefault, 0)) ?>" min="0" max="100" step="0.01" style="width:84px;padding:4px 8px;font-size:13px;text-align:right;" oninput="renderCart()">
+          <span id="taxAmountVal" style="display:inline-block;min-width:70px;text-align:right;"><?= $currency ?> 0.00</span>
+        </span>
+      </div>
+      <div class="pos-total-row grand"><span>TOTAL</span><span id="totalVal"><?= $currency ?> 0.00</span></div>
     </div>
 
     <div class="pos-checkout">
       <form id="checkoutForm" method="POST">
         <input type="hidden" name="cart_json" id="cartJson">
         <input type="hidden" name="discount" id="discountHidden">
+        <input type="hidden" name="discount_type" id="discountTypeHidden" value="amount">
+        <input type="hidden" name="tax_rate" id="taxRateHidden">
+        <input type="hidden" name="payment_method" id="paymentMethodHidden" value="cash">
+
+        <div class="form-group" style="margin-bottom:12px;">
+          <label style="margin-bottom:6px;display:block;">Payment Method</label>
+          <div class="pay-methods" id="payMethods">
+            <?php foreach ($payButtons as $key => $label): ?>
+            <button type="button" class="pay-method-btn<?= $key === 'cash' ? ' active' : '' ?>" data-method="<?= $key ?>" onclick="selectPayment(this)">
+              <?= htmlspecialchars($label) ?>
+            </button>
+            <?php endforeach; ?>
+          </div>
+        </div>
 
         <!-- Customer -->
         <div class="form-group" style="margin-bottom:10px;">
           <label style="margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;">
             Customer
-            <button type="button" class="btn btn-ghost btn-sm" onclick="openRegisterModal()" style="padding:2px 8px;font-size:11px;">+ Register</button>
+            <button type="button" class="btn btn-ghost btn-sm" onclick="openRegisterModal()" style="padding:2px 8px;font-size:11px;">+ Register Customer</button>
           </label>
+          <input type="text" id="customerFilter" placeholder="Search customer by name or phone…" oninput="filterCustomers(this.value)" style="padding:7px 10px;font-size:12px;margin-bottom:6px;">
           <select name="customer_id" id="customerSelect" onchange="onCustomerChange()" style="padding:8px 12px;font-size:13px;">
             <option value="0" data-name="Walk-in Customer" data-phone="">Walk-in Customer</option>
             <?php foreach ($customers as $c): ?>
@@ -208,16 +259,6 @@ renderSidebar();
           <input type="tel" name="customer_phone" id="customerPhone" placeholder="Optional for walk-in" style="padding:8px 12px;font-size:13px;">
         </div>
 
-        <!-- Payment -->
-        <div class="form-group" style="margin-bottom:10px;">
-          <label style="margin-bottom:4px;">Payment Method</label>
-          <select name="payment_method" id="paymentMethod" onchange="onPaymentChange()" style="padding:8px 12px;font-size:13px;">
-            <?php foreach ($payMethods as $key => $label): ?>
-            <option value="<?= $key ?>"><?= htmlspecialchars($label) ?></option>
-            <?php endforeach; ?>
-          </select>
-        </div>
-
         <div id="refGroup" class="form-group" style="margin-bottom:10px;display:none;">
           <label style="margin-bottom:4px;">Transaction Reference <span style="color:var(--text-300);font-weight:400;">(optional)</span></label>
           <input type="text" name="payment_reference" placeholder="e.g. Telebirr ref #" style="padding:8px 12px;font-size:13px;">
@@ -227,14 +268,14 @@ renderSidebar();
         <div id="creditPanel" style="display:none;" class="credit-panel mb-10">
           <div class="credit-panel-title"><i data-lucide="credit-card"></i> Credit Sale</div>
           <div id="creditWarning" class="alert alert-warning" style="display:none;margin-bottom:10px;padding:10px;font-size:12px;">
-            Credit sales are only available for registered customers. Please select or register a customer before completing the sale.
+            Credit sales require a registered customer. Select a customer or press <strong>+ Register Customer</strong> before completing the sale.
           </div>
           <div class="form-group" style="margin-bottom:8px;">
-            <label>Customer Name</label>
+            <label>Customer Name <span style="color:var(--danger);">*</span></label>
             <input type="text" id="creditCustName" readonly style="padding:8px 12px;font-size:13px;background:var(--bg-700);">
           </div>
           <div class="form-group" style="margin-bottom:8px;">
-            <label>Phone Number</label>
+            <label>Phone Number <span style="color:var(--danger);">*</span></label>
             <input type="text" id="creditCustPhone" readonly style="padding:8px 12px;font-size:13px;background:var(--bg-700);">
           </div>
           <div class="form-group" style="margin-bottom:8px;">
@@ -266,7 +307,7 @@ renderSidebar();
 
         <div class="pos-total-row" style="margin-bottom:12px;font-size:12px;color:var(--text-300);">
           <span>Amount due</span>
-          <span id="paidDisplay" style="color:var(--accent2);font-weight:700;">ETB 0.00</span>
+          <span id="paidDisplay" style="color:var(--accent2);font-weight:700;"><?= $currency ?> 0.00</span>
         </div>
 
         <button type="submit" class="btn btn-success" id="checkoutBtn" onclick="return prepareCheckout()">
@@ -299,104 +340,261 @@ renderSidebar();
 </div>
 
 <script>
-const CUR = '<?= getSetting('currency','ETB') ?>';
-const CREDIT_MSG = 'Credit sales are only available for registered customers. Please select or register a customer before completing the sale.';
+const CUR = <?= json_encode($currency) ?>;
+const TAX_DEFAULT = <?= json_encode($taxDefault) ?>;
+const CREDIT_MSG = 'Credit sales require a registered customer. Select or register a customer before completing the sale.';
+const CATALOG = <?= json_encode($catalog, JSON_UNESCAPED_UNICODE) ?>;
+
 let cart = {};
 let currentTotal = 0;
 
-function addToCart(el) {
-  const id    = el.dataset.id;
-  const name  = el.dataset.name;
-  const price = parseFloat(el.dataset.price);
-  const stock = parseInt(el.dataset.stock);
-  const unit  = el.dataset.unit;
+// ── Medicine search & grid ───────────────────────────────────
+const medGroups = (() => {
+  const groups = new Map();
+  CATALOG.forEach(b => {
+    if (!groups.has(b.medicine_id)) {
+      groups.set(b.medicine_id, {
+        medicine_id: b.medicine_id,
+        name: b.name,
+        generic_name: b.generic_name || '',
+        strength: b.strength || '',
+        dosage_form: b.dosage_form || '',
+        unit: b.unit || '',
+        batches: [],
+      });
+    }
+    groups.get(b.medicine_id).batches.push(b);
+  });
+  return [...groups.values()];
+})();
 
-  if (cart[id]) {
-    if (cart[id].qty < stock) cart[id].qty++;
-    else { alert('Maximum stock reached!'); return; }
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function expShort(d) {
+  const m = String(d || '').match(/^(\d{4})-(\d{2})/);
+  return m ? ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][parseInt(m[2], 10) - 1] + ' ' + m[1] : (d || '—');
+}
+function expSoon(d) {
+  if (!d) return false;
+  const t = new Date(d + 'T00:00:00').getTime();
+  return !isNaN(t) && t - Date.now() < 45 * 86400000 && t >= Date.now() - 86400000;
+}
+function medMatches(b, term) {
+  const hay = [
+    b.name, b.generic_name, b.strength, b.dosage_form,
+    b.batch_number, b.barcode, b.sku, b.unit, b.product_type,
+  ].filter(v => v != null).join(' ').toLowerCase();
+  return term.split(/\s+/).every(w => hay.includes(w));
+}
+
+function renderGrid(q) {
+  const grid = document.getElementById('medGrid');
+  const term = (q || '').trim().toLowerCase();
+  let html = '';
+  let any = false;
+
+  for (const g of medGroups) {
+    const batches = g.batches.filter(b => !term || medMatches(b, term));
+    if (!batches.length) continue;
+    any = true;
+    const stock = batches.reduce((s, b) => s + b.stock, 0);
+    const sub = [g.generic_name, g.strength, g.dosage_form].filter(Boolean).join(' · ');
+    html += `<div class="pos-med-group">
+      <div class="pos-med-header">
+        <div class="pos-med-head-main">
+          <span class="pos-med-name">${esc(g.name)}</span>
+          ${sub ? `<span class="pos-med-sub">${esc(sub)}</span>` : ''}
+        </div>
+        <span class="pos-med-stock">${stock} ${esc(g.unit)}</span>
+      </div>`;
+    batches.forEach(b => {
+      const soon = expSoon(b.expiry_date);
+      html += `<div class="pos-batch-row" data-batch-id="${b.batch_id}" onclick="addToCart(this)">
+        <div class="pos-batch-info">
+          <span class="pos-batch-num">Batch ${esc(b.batch_number)}</span>
+          <span class="pos-batch-exp">Exp ${expShort(b.expiry_date)}${soon ? ' <span class="badge badge-orange" style="font-size:9px;padding:1px 5px;">Soon</span>' : ''}</span>
+          <span class="pos-batch-stock">${b.stock} ${esc(g.unit)}</span>
+        </div>
+        <div class="pos-batch-price">${CUR} ${Number(b.selling_price).toFixed(2)}</div>
+      </div>`;
+    });
+    html += '</div>';
+  }
+
+  grid.innerHTML = any ? html : `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--text-300);">
+    <p>No medicines match "${esc(q)}".</p></div>`;
+  if (window.lucide) lucide.createIcons();
+}
+
+// ── Cart ─────────────────────────────────────────────────────
+function addToCart(el) {
+  const bid = el.dataset.batchId;
+  const b = CATALOG.find(x => String(x.batch_id) === String(bid));
+  if (!b) return;
+  if (cart[bid]) {
+    if (cart[bid].qty < b.stock) cart[bid].qty++;
+    else { flashMsg('Maximum stock reached for this batch.'); return; }
   } else {
-    cart[id] = { medicine_id: id, name, price, qty: 1, stock, unit };
+    cart[bid] = {
+      batch_id: b.batch_id, medicine_id: b.medicine_id,
+      name: b.name, generic: b.generic_name || '', strength: b.strength || '',
+      dosage_form: b.dosage_form || '', unit: b.unit || '',
+      batch_number: b.batch_number, expiry_date: b.expiry_date,
+      price: Number(b.selling_price), qty: 1, stock: b.stock,
+    };
   }
   renderCart();
 }
 
-function adjustQty(id, delta) {
-  if (!cart[id]) return;
-  cart[id].qty += delta;
-  if (cart[id].qty <= 0) delete cart[id];
-  else if (cart[id].qty > cart[id].stock) cart[id].qty = cart[id].stock;
+function adjustQty(bid, delta) {
+  if (!cart[bid]) return;
+  cart[bid].qty += delta;
+  if (cart[bid].qty <= 0) delete cart[bid];
+  else if (cart[bid].qty > cart[bid].stock) cart[bid].qty = cart[bid].stock;
   renderCart();
 }
 
-function removeItem(id) { delete cart[id]; renderCart(); }
+function removeItem(bid) { delete cart[bid]; renderCart(); }
+
+function flashMsg(msg) {
+  let el = document.getElementById('posCartMsg');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'posCartMsg';
+    el.className = 'alert alert-warning';
+    el.style.cssText = 'margin:0 10px 6px;padding:8px 12px;font-size:12px;';
+    document.getElementById('cartItems').parentElement.insertBefore(el, document.getElementById('cartItems'));
+  }
+  el.textContent = msg;
+  clearTimeout(el._t);
+  el._t = setTimeout(() => { if (el) el.remove(); }, 2500);
+}
+
+function discountAmount(sub) {
+  const type = document.getElementById('discountType').value;
+  const raw = parseFloat(document.getElementById('discountInput').value) || 0;
+  if (type === 'percent') return Math.min(sub, sub * Math.min(raw, 100) / 100);
+  return Math.min(sub, raw);
+}
+function taxRate() {
+  return Math.min(100, Math.max(0, parseFloat(document.getElementById('taxRateInput').value) || 0));
+}
 
 function renderCart() {
   const container = document.getElementById('cartItems');
-  const keys = Object.keys(cart);
-  document.getElementById('cartCount').textContent = `(${keys.length} item${keys.length !== 1 ? 's' : ''})`;
+  const items = Object.values(cart);
+  document.getElementById('cartCount').textContent = `(${items.length} item${items.length !== 1 ? 's' : ''})`;
 
-  if (keys.length === 0) {
+  if (items.length === 0) {
     container.innerHTML = '<div style="text-align:center;padding:40px 20px;color:var(--text-300);font-size:13px;">Click medicines to add to cart</div>';
-    recalc(); return;
+    updateTotals(items);
+    return;
   }
 
-  container.innerHTML = keys.map(id => {
-    const it = cart[id];
+  const sub = items.reduce((s, it) => s + it.price * it.qty, 0);
+  const disc = discountAmount(sub);
+  const discounted = Math.max(0, sub - disc);
+  const tax = discounted * taxRate() / 100;
+  const total = Math.max(0, discounted + tax);
+  currentTotal = total;
+
+  container.innerHTML = items.map(it => {
+    const lineSub = it.price * it.qty;
+    const share = sub > 0 ? lineSub / sub : 0;
+    const lineDisc = disc * share;
+    const lineTax = (lineSub - lineDisc) * taxRate() / 100;
+    const lineTotal = lineSub - lineDisc + lineTax;
+    const subLine = [it.generic, it.strength, it.dosage_form].filter(Boolean).join(' · ');
     return `<div class="cart-item">
-      <div style="flex:1;">
-        <div class="cart-item-name">${it.name}</div>
-        <div class="cart-item-price">${CUR} ${it.price.toFixed(2)} × ${it.qty} = ${CUR} ${(it.price * it.qty).toFixed(2)}</div>
-        <div style="font-size:10px;color:var(--text-300);">FEFO · ${it.unit}</div>
+      <div style="flex:1;min-width:0;">
+        <div class="cart-item-name">${esc(it.name)}</div>
+        ${subLine ? `<div class="cart-item-sub">${esc(subLine)}</div>` : ''}
+        <div class="cart-item-meta">Batch ${esc(it.batch_number)} · Exp ${expShort(it.expiry_date)}</div>
+        <div class="cart-item-price">Unit ${CUR} ${it.price.toFixed(2)}</div>
+        <div class="cart-item-line">
+          <span>Disc ${CUR} ${lineDisc.toFixed(2)}</span>
+          <span>Tax ${CUR} ${lineTax.toFixed(2)}</span>
+          <span class="cart-item-total">${CUR} ${lineTotal.toFixed(2)}</span>
+        </div>
       </div>
-      <div class="qty-ctrl">
-        <button type="button" class="qty-btn" onclick="adjustQty('${id}',-1)">−</button>
-        <span class="qty-val">${it.qty}</span>
-        <button type="button" class="qty-btn" onclick="adjustQty('${id}',1)">+</button>
+      <div style="display:flex;flex-direction:column;align-items:flex-end;gap:8px;">
+        <div class="qty-ctrl">
+          <button type="button" class="qty-btn" onclick="adjustQty(${it.batch_id},-1)">−</button>
+          <span class="qty-val">${it.qty}</span>
+          <button type="button" class="qty-btn" onclick="adjustQty(${it.batch_id},1)">+</button>
+        </div>
+        <button type="button" class="cart-item-remove" onclick="removeItem(${it.batch_id})" title="Remove">×</button>
       </div>
-      <button type="button" class="cart-item-remove" onclick="removeItem('${id}')">×</button>
     </div>`;
   }).join('');
-  recalc();
+
+  updateTotals(items);
 }
 
-function recalc() {
-  let sub = Object.values(cart).reduce((s, it) => s + it.price * it.qty, 0);
-  let dis = parseFloat(document.getElementById('discountInput').value) || 0;
-  if (dis > sub) { dis = sub; document.getElementById('discountInput').value = dis; }
-  currentTotal = Math.max(0, sub - dis);
-  document.getElementById('subtotalVal').textContent = `${CUR} ${sub.toFixed(2)}`;
-  document.getElementById('totalVal').textContent    = `${CUR} ${currentTotal.toFixed(2)}`;
-  document.getElementById('paidDisplay').textContent = `${CUR} ${currentTotal.toFixed(2)}`;
-  document.getElementById('creditInvoiceTotal').value = `${CUR} ${currentTotal.toFixed(2)}`;
+function updateTotals(items) {
+  const sub = items.reduce((s, it) => s + it.price * it.qty, 0);
+  const disc = discountAmount(sub);
+  const discounted = Math.max(0, sub - disc);
+  const tax = discounted * taxRate() / 100;
+  const total = Math.max(0, discounted + tax);
+  currentTotal = total;
+
+  document.getElementById('subtotalVal').textContent   = `${CUR} ${sub.toFixed(2)}`;
+  document.getElementById('discountedVal').textContent = `${CUR} ${discounted.toFixed(2)}`;
+  document.getElementById('taxAmountVal').textContent  = `${CUR} ${tax.toFixed(2)}`;
+  document.getElementById('totalVal').textContent      = `${CUR} ${total.toFixed(2)}`;
+  document.getElementById('paidDisplay').textContent   = `${CUR} ${total.toFixed(2)}`;
+  document.getElementById('creditInvoiceTotal').value  = `${CUR} ${total.toFixed(2)}`;
   updateCreditBalance();
   validateCheckout();
 }
 
+// ── Payment method buttons ───────────────────────────────────
+function getPaymentMethod() {
+  return document.getElementById('paymentMethodHidden').value;
+}
+function selectPayment(btn) {
+  document.querySelectorAll('.pay-method-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  document.getElementById('paymentMethodHidden').value = btn.dataset.method;
+  onPaymentChange();
+}
+
+function onPaymentChange() {
+  const method = getPaymentMethod();
+  const isCredit = method === 'credit';
+  const isDigital = ['telebirr', 'cbe', 'abyssinia'].includes(method);
+  document.getElementById('creditPanel').style.display = isCredit ? '' : 'none';
+  document.getElementById('refGroup').style.display = isDigital ? '' : 'none';
+  document.getElementById('dueDate').required = isCredit;
+  onCustomerChange();
+  renderCart();
+}
+
+// ── Customer ─────────────────────────────────────────────────
 function getSelectedCustomer() {
   const sel = document.getElementById('customerSelect');
   const opt = sel.options[sel.selectedIndex];
   return { id: parseInt(sel.value) || 0, name: opt.dataset.name || '', phone: opt.dataset.phone || '' };
 }
 
+function filterCustomers(q) {
+  const term = q.trim().toLowerCase();
+  const sel = document.getElementById('customerSelect');
+  for (const opt of sel.options) {
+    if (opt.value === '0') { opt.style.display = ''; continue; }
+    const text = (opt.textContent || '').toLowerCase();
+    opt.style.display = (!term || text.includes(term)) ? '' : 'none';
+  }
+}
+
 function onCustomerChange() {
   const c = getSelectedCustomer();
   document.getElementById('walkinPhone').style.display = c.id ? 'none' : '';
-  document.getElementById('creditCustName').value  = c.id ? c.name : '';
-  document.getElementById('creditCustPhone').value = c.id ? c.phone : '';
+  document.getElementById('creditCustName').value  = c.name;
+  document.getElementById('creditCustPhone').value = c.phone;
   validateCheckout();
-}
-
-function onPaymentChange() {
-  const method = document.getElementById('paymentMethod').value;
-  const isCredit = method === 'credit';
-  const isDigital = ['telebirr','cbe','abyssinia'].includes(method);
-
-  document.getElementById('creditPanel').style.display = isCredit ? '' : 'none';
-  document.getElementById('refGroup').style.display = isDigital ? '' : 'none';
-  document.getElementById('dueDate').required = isCredit;
-
-  onCustomerChange();
-  recalc();
 }
 
 function updateCreditBalance() {
@@ -406,16 +604,20 @@ function updateCreditBalance() {
 }
 
 function validateCheckout() {
-  const method = document.getElementById('paymentMethod').value;
+  const method = getPaymentMethod();
   const c = getSelectedCustomer();
   const btn = document.getElementById('checkoutBtn');
   const warn = document.getElementById('creditWarning');
   const cartEmpty = Object.keys(cart).length === 0;
 
   let blocked = cartEmpty;
-  if (method === 'credit' && !c.id) {
-    blocked = true;
-    warn.style.display = '';
+  if (method === 'credit') {
+    if (!c.id) {
+      blocked = true;
+      warn.style.display = '';
+    } else {
+      warn.style.display = 'none';
+    }
   } else {
     warn.style.display = 'none';
   }
@@ -427,18 +629,21 @@ function validateCheckout() {
 
 function prepareCheckout() {
   if (Object.keys(cart).length === 0) { alert('Cart is empty!'); return false; }
-  const method = document.getElementById('paymentMethod').value;
+  const method = getPaymentMethod();
   const c = getSelectedCustomer();
   if (method === 'credit' && !c.id) {
     alert(CREDIT_MSG);
     return false;
   }
-  const cartItems = Object.values(cart).map(it => ({ medicine_id: it.medicine_id, qty: it.qty }));
+  const cartItems = Object.values(cart).map(it => ({ batch_id: it.batch_id, qty: it.qty }));
   document.getElementById('cartJson').value = JSON.stringify(cartItems);
   document.getElementById('discountHidden').value = document.getElementById('discountInput').value;
+  document.getElementById('discountTypeHidden').value = document.getElementById('discountType').value;
+  document.getElementById('taxRateHidden').value = document.getElementById('taxRateInput').value;
   return true;
 }
 
+// ── Register customer ────────────────────────────────────────
 function openRegisterModal() {
   document.getElementById('regError').style.display = 'none';
   document.getElementById('regName').value = '';
@@ -480,18 +685,10 @@ function submitRegister() {
     .catch(() => alert('Registration failed. Please try again.'));
 }
 
-function filterMeds(q) {
-  const term = q.toLowerCase();
-  document.querySelectorAll('.med-card').forEach(el => {
-    const name = el.dataset.name.toLowerCase();
-    const generic = el.dataset.generic.toLowerCase();
-    el.style.display = (!term || name.includes(term) || generic.includes(term)) ? '' : 'none';
-  });
-}
-
+if (CATALOG.length) renderGrid('');
 onCustomerChange();
 onPaymentChange();
-validateCheckout();
+renderCart();
 </script>
 
 <?php renderFooter(); ?>

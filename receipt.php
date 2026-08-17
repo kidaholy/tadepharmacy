@@ -46,6 +46,9 @@ $payLabel        = posPaymentMethods()[$sale['payment_method']] ?? ucfirst($sale
 $dueDate         = $sale['due_date'] ?? $sale['credit_due_date'] ?? null;
 $change          = (float)$sale['paid_amount'] - $netTotal;
 
+$autoprint = ($_GET['autoprint'] ?? '0') === '1';
+$backToPos = ($_GET['back'] ?? '') === 'pos';
+
 renderHead('Receipt #' . $sale['invoice_number']);
 renderSidebar();
 ?>
@@ -54,14 +57,33 @@ renderSidebar();
 <?php renderTopbar('Receipt', $sale['invoice_number']); ?>
 <div class="page-body">
 
+<?php if ($backToPos): ?>
+<div class="alert alert-success no-print" style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;">
+  <span><i data-lucide="check-circle"></i> <strong>Sale completed.</strong> <?= htmlspecialchars($sale['invoice_number']) ?> saved — stock updated. Print below or start the next customer.</span>
+  <a href="pos.php" class="btn btn-success btn-sm"><i data-lucide="plus"></i> New Sale</a>
+</div>
+<?php endif; ?>
+
 <div class="receipt-actions no-print">
   <button onclick="window.print()" class="btn btn-primary"><i data-lucide="printer"></i> Print Receipt</button>
   <a href="pos.php" class="btn btn-success"><i data-lucide="plus"></i> New Sale</a>
   <?php if ($sale['customer_id']): ?>
   <a href="customers.php?id=<?= $sale['customer_id'] ?>" class="btn btn-ghost"><i data-lucide="user"></i> Customer</a>
   <?php endif; ?>
-  <a href="sales.php" class="btn btn-ghost"><i data-lucide="arrow-left"></i> Back to Sales</a>
+  <a href="sales.php" class="btn btn-ghost"><i data-lucide="arrow-left"></i> Sales History</a>
 </div>
+
+<?php if ($autoprint): ?>
+<script>
+  window.addEventListener('load', function () {
+    setTimeout(function () { window.print(); }, 400);
+  });
+  window.addEventListener('afterprint', function () {
+    <?php if ($backToPos): ?>window.location.href = 'pos.php';
+    <?php endif; ?>
+  });
+</script>
+<?php endif; ?>
 
 <div class="receipt-ticket" id="receiptContent">
   <div class="rt-header">
@@ -113,6 +135,9 @@ renderSidebar();
     <div class="rt-row"><span>Subtotal</span><span><?= $currency ?> <?= number_format($sale['total_amount'], 2) ?></span></div>
     <?php if ((float)$sale['discount'] > 0): ?>
     <div class="rt-row"><span>Discount</span><span>-<?= $currency ?> <?= number_format($sale['discount'], 2) ?></span></div>
+    <?php endif; ?>
+    <?php if ((float)$sale['tax'] > 0): ?>
+    <div class="rt-row"><span>Tax</span><span><?= $currency ?> <?= number_format($sale['tax'], 2) ?></span></div>
     <?php endif; ?>
     <div class="rt-row rt-total"><span>TOTAL</span><span><?= $currency ?> <?= number_format($netTotal, 2) ?></span></div>
     <div class="rt-row"><span>Paid</span><span><?= $currency ?> <?= number_format($sale['paid_amount'], 2) ?></span></div>

@@ -28,6 +28,12 @@ $notifyFields = [
     'telegram_report_time_2'=> ['label' => 'Evening report time',    'type' => 'time', 'default' => '18:00'],
 ];
 
+$receiptFields = [
+    'receipt_show_preview'     => ['label' => 'Show Receipt Preview after sale', 'type' => 'checkbox', 'default' => '1', 'hint' => 'Show the receipt screen after completing a sale. When OFF the cashier returns straight to New Sale.'],
+    'receipt_auto_print'       => ['label' => 'Auto Print Receipt',             'type' => 'checkbox', 'default' => '1', 'hint' => 'Automatically open the print dialog for a new sale (requires the receipt preview to be shown).'],
+    'receipt_print_after_sale' => ['label' => 'Print After Completed Sale',      'type' => 'checkbox', 'default' => '0', 'hint' => 'Trigger printing immediately when a sale completes. Both this and Auto Print must be ON to auto-print.'],
+];
+
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     if (!can('settings.manage')) {
         flashSet('error', 'You do not have permission to edit settings.');
@@ -94,7 +100,11 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         }
     } else {
         $form = $_POST['form'] ?? '';
-        $toSave = $form === 'notify' ? $notifyFields : $fields;
+        $toSave = match ($form) {
+            'notify'  => $notifyFields,
+            'receipt' => $receiptFields,
+            default   => $fields,
+        };
         $stmt = $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)");
         foreach ($toSave as $key => $def) {
             if ($def['type'] === 'checkbox') {
@@ -114,7 +124,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
 // Reload
 $settings = [];
-foreach (array_merge($fields, $notifyFields) as $key => $def) {
+foreach (array_merge($fields, $notifyFields, $receiptFields) as $key => $def) {
     $fallback = $def['default'] ?? ($def['type'] === 'checkbox' ? '0' : '');
     $settings[$key] = getSetting($key, $fallback);
 }
@@ -173,6 +183,32 @@ renderSidebar();
   </div>
 
   <div style="display:flex;flex-direction:column;gap:20px;">
+  <!-- Sales / POS → Receipt Settings -->
+  <div class="card">
+    <div class="card-header"><span class="card-title">Sales / POS — Receipt Settings</span></div>
+    <form method="POST">
+      <input type="hidden" name="form" value="receipt">
+      <?php foreach ($receiptFields as $key => $def): ?>
+      <div class="form-group">
+        <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;">
+          <input type="checkbox" name="<?= $key ?>" value="1" <?= $settings[$key] === '1' ? 'checked' : '' ?> style="width:auto;margin-top:2px;">
+          <span>
+            <?= htmlspecialchars($def['label']) ?>
+            <?php if (isset($def['hint'])): ?><span style="display:block;color:var(--text-300);font-weight:400;font-size:11px;margin-top:2px;"><?= htmlspecialchars($def['hint']) ?></span><?php endif; ?>
+          </span>
+        </label>
+      </div>
+      <?php endforeach; ?>
+      <div class="form-group">
+        <label>Default Tax Rate (%) <span style="color:var(--text-300);font-weight:400;font-size:11px;">(used automatically in the POS cart)</span></label>
+        <input type="number" name="tax_rate" min="0" max="100" step="0.01" value="<?= htmlspecialchars($settings['tax_rate']) ?>">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary"><i data-lucide="receipt"></i> Save Receipt Settings</button>
+      </div>
+    </form>
+  </div>
+
   <!-- Notifications -->
   <div class="card">
     <div class="card-header"><span class="card-title">Notification Settings</span></div>

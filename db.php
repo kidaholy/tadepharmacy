@@ -216,6 +216,9 @@ function initDB(PDO $pdo): void {
         'ALTER TABLE sales ADD COLUMN remaining_balance REAL DEFAULT 0',
         'ALTER TABLE sales ADD COLUMN payment_reference TEXT',
         'ALTER TABLE sales ADD COLUMN credit_notes TEXT',
+        'ALTER TABLE sales ADD COLUMN tax REAL DEFAULT 0',
+        'ALTER TABLE sale_items ADD COLUMN discount REAL DEFAULT 0',
+        'ALTER TABLE sale_items ADD COLUMN tax REAL DEFAULT 0',
         'ALTER TABLE medicines ADD COLUMN product_type TEXT DEFAULT \'medicine\'',
     ] as $migration) {
         try { $pdo->exec($migration); } catch (PDOException $e) { /* already applied */ }
@@ -252,6 +255,9 @@ function initDB(PDO $pdo): void {
         'pharmacy_address' => 'Addis Ababa, Ethiopia',
         'currency'         => 'ETB',
         'tax_rate'         => '0',
+        'receipt_auto_print'     => '1',
+        'receipt_show_preview'   => '1',
+        'receipt_print_after_sale' => '0',
         'receipt_footer'   => 'Thank you for choosing TADE PHARMACY!',
         'telegram_daily_report' => '1',
         'telegram_report_time_1' => '09:00',
@@ -297,6 +303,7 @@ function initDB(PDO $pdo): void {
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_customer ON sales(customer_id)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_payment_status ON sales(payment_status)");
+    $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sales_payment_method ON sales(payment_method)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_payment_history_sale ON payment_history(sale_id)");
     $pdo->exec("CREATE INDEX IF NOT EXISTS idx_payment_history_customer ON payment_history(customer_id)");
 

@@ -4,9 +4,20 @@ require_once __DIR__ . '/db.php';
 function posPaymentMethods(): array {
     return [
         'cash'      => 'Cash',
+        'cbe'       => 'CBE',
+        'abyssinia' => 'Abyssinia',
         'telebirr'  => 'Telebirr',
-        'cbe'       => 'Commercial Bank of Ethiopia',
-        'abyssinia' => 'Abyssinia Bank',
+        'credit'    => 'Credit',
+    ];
+}
+
+/** Short cashier-facing labels for the POS payment buttons. */
+function posPaymentButtonLabels(): array {
+    return [
+        'cash'      => 'Cash',
+        'cbe'       => 'CBE',
+        'abyssinia' => 'Abyssinia',
+        'telebirr'  => 'Telebirr',
         'credit'    => 'Credit',
     ];
 }
@@ -71,8 +82,14 @@ function expiryTrackedSql(string $column = 'expiry_date'): string {
     return $column . " < '9000-01-01'";
 }
 
-function saleNetAmount(array $sale): float {
+/** Discounted subtotal: gross line total minus the invoice discount (excludes tax). */
+function saleDiscountedSubtotal(array $sale): float {
     return (float)$sale['total_amount'] - (float)$sale['discount'];
+}
+
+/** Amount the customer owes / pays: subtotal − discount + tax. */
+function saleNetAmount(array $sale): float {
+    return saleDiscountedSubtotal($sale) + (float)($sale['tax'] ?? 0);
 }
 
 function computePaymentStatus(float $net, float $paid, string $paymentMethod): string {
@@ -174,35 +191,93 @@ function buildFefoLineItems(PDO $pdo, array $cartItems): array {
     return $allLines;
 }
 
-function fetchPosMedicines(PDO $pdo): array {
-    $rows = $pdo->query("
-        SELECT m.id, m.name, m.generic_name, m.unit,
-               b.id AS batch_id, b.batch_number, b.selling_price, b.quantity AS batch_qty, b.expiry_date
+/**
+ * POS search catalog: one row per sellable batch (non-expired, in stock),
+ * enriched with the fields the cashier searches and sees — brand, generic,
+ * strength, dosage form, batch number, barcode/SKU, expiry, stock, price.
+ * Batches are ordered by expiry so the earliest-valid batch always appears first.
+ */
+function fetchPosCatalog(PDO $pdo): array {
+    return $pdo->query("
+        SELECT m.id AS medicine_id, m.name, m.generic_name, m.strength, m.dosage_form,
+               m.unit, m.barcode, m.sku, COALESCE(m.product_type,'medicine') AS product_type,
+               b.id AS batch_id, b.batch_number, b.selling_price, b.quantity AS stock, b.expiry_date
         FROM medicines m
         JOIN batches b ON b.medicine_id = m.id
         WHERE b.quantity > 0 AND b.expiry_date >= date('now')
-        ORDER BY m.name, b.expiry_date ASC
+        ORDER BY m.name COLLATE NOCASE, b.expiry_date ASC, b.id ASC
     ")->fetchAll();
+}
 
-    $map = [];
-    foreach ($rows as $row) {
-        $mid = (int)$row['id'];
-        if (!isset($map[$mid])) {
-            $map[$mid] = [
-                'id'           => $mid,
-                'name'         => $row['name'],
-                'generic_name' => $row['generic_name'],
-                'unit'         => $row['unit'],
-                'batch_id'     => (int)$row['batch_id'],
-                'batch_number' => $row['batch_number'],
-                'selling_price'=> (float)$row['selling_price'],
-                'stock'        => 0,
-                'expiry_date'  => $row['expiry_date'],
-            ];
+/**
+ * Build sale line items directly from cart batches (each cart entry carries the
+ * exact batch the cashier picked, so no FEFO re-splitting is needed at checkout).
+ * Validates stock, expiry and quantity for every batch before returning.
+ */
+function buildBatchLineItems(PDO $pdo, array $cartItems): array {
+    $merged = [];
+    foreach ($cartItems as $item) {
+        $batchId = (int)($item['batch_id'] ?? 0);
+        $qty = (int)($item['qty'] ?? 0);
+        if ($batchId <= 0 || $qty <= 0) {
+            throw new RuntimeException('Invalid cart item.');
         }
-        $map[$mid]['stock'] += (int)$row['batch_qty'];
+        $merged[$batchId] = ($merged[$batchId] ?? 0) + $qty;
     }
-    return array_values($map);
+    if (!$merged) {
+        throw new RuntimeException('Cart is empty. Add at least one medicine.');
+    }
+
+    $lines = [];
+    $st = $pdo->prepare("
+        SELECT b.*, m.id AS medicine_id, m.name, m.generic_name, m.strength, m.dosage_form, m.unit
+        FROM batches b
+        JOIN medicines m ON m.id = b.medicine_id
+        WHERE b.id = ?
+    ");
+    foreach ($merged as $batchId => $qty) {
+        $st->execute([$batchId]);
+        $b = $st->fetch();
+        if (!$b) {
+            throw new RuntimeException('A selected batch no longer exists. Refresh and try again.');
+        }
+        if (!isNoExpiryDate($b['expiry_date']) && $b['expiry_date'] < date('Y-m-d')) {
+            throw new RuntimeException("Batch {$b['batch_number']} of {$b['name']} is expired.");
+        }
+        if ((int)$b['quantity'] < $qty) {
+            throw new RuntimeException("Insufficient stock for {$b['name']} (batch {$b['batch_number']}). Available: {$b['quantity']}.");
+        }
+        $price = (float)$b['selling_price'];
+        $lines[] = [
+            'medicine_id'  => (int)$b['medicine_id'],
+            'batch_id'     => (int)$b['id'],
+            'batch_number' => $b['batch_number'],
+            'med_name'     => $b['name'],
+            'generic'      => $b['generic_name'] ?? '',
+            'strength'     => $b['strength'] ?? '',
+            'dosage_form'  => $b['dosage_form'] ?? '',
+            'unit'         => $b['unit'] ?? '',
+            'qty'          => $qty,
+            'price'        => $price,
+            'subtotal'     => round($price * $qty, 2),
+        ];
+    }
+    return $lines;
+}
+
+/** Sale items enriched with brand, generic, strength, form, batch and expiry — for details/receipt views. */
+function fetchSaleItemsDetailed(PDO $pdo, int $saleId): array {
+    $st = $pdo->prepare("
+        SELECT si.*, m.name, m.generic_name, m.strength, m.dosage_form, m.unit,
+               b.batch_number, b.expiry_date
+        FROM sale_items si
+        JOIN medicines m ON m.id = si.medicine_id
+        LEFT JOIN batches b ON b.id = si.batch_id
+        WHERE si.sale_id = ?
+        ORDER BY si.id
+    ");
+    $st->execute([$saleId]);
+    return $st->fetchAll();
 }
 
 function recordSalePayment(PDO $pdo, int $saleId, ?int $customerId, float $amount, string $method, ?string $reference, ?int $receivedBy, ?string $notes = null): void {

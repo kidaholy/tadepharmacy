@@ -48,6 +48,7 @@ function pagePermissionMap(): array {
         'index'         => 'dashboard.view',
         'medicines'     => 'medicines.view',
         'sales'         => 'sales.view',
+        'sale_details'  => 'sales.view',
         'customers'     => 'customers.view',
         'pos'           => 'pos.access',
         'purchases'         => 'purchases.view',
