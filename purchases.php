@@ -380,8 +380,21 @@ renderSidebar();
     </div>
     <div class="card">
       <div class="card-header"><span class="card-title">Summary</span></div>
+      <div class="form-row" style="margin-bottom:6px;">
+        <div class="form-group" style="margin:0;">
+          <label>Discount <span style="color:var(--text-300);font-weight:400;">(whole invoice)</span></label>
+          <input type="number" name="header_discount" id="discountInput" min="0" step="0.01" value="0" placeholder="0.00" oninput="recalc()">
+        </div>
+        <div class="form-group" style="margin:0;">
+          <label>Tax <span style="color:var(--text-300);font-weight:400;">(whole invoice)</span></label>
+          <input type="number" name="header_tax" id="taxInput" min="0" step="0.01" value="0" placeholder="0.00" oninput="recalc()">
+        </div>
+      </div>
+      <p style="font-size:12px;color:var(--text-300);margin:0 0 4px;">Discount and tax apply to the whole invoice once all products are entered — they are not added per product.</p>
       <div class="report-summary-grid purchase-summary-grid">
         <div><span class="report-k">Subtotal</span><span class="report-v" id="sumSub">0.00</span></div>
+        <div><span class="report-k">Discount</span><span class="report-v" id="sumDisc" style="color:var(--text-300);">0.00</span></div>
+        <div><span class="report-k">Tax</span><span class="report-v" id="sumTax">0.00</span></div>
         <div><span class="report-k">Grand Total</span><span class="report-v" id="sumGrand">0.00</span></div>
         <div><span class="report-k">Amount Paid</span><span class="report-v" id="sumPaid">0.00</span></div>
         <div><span class="report-k">Supplier Credit / Balance Due</span><span class="report-v" id="sumDue" style="color:var(--warning);">0.00</span></div>
@@ -877,8 +890,13 @@ function recalc() {
     const summary = row.querySelector('.purchase-card-summary');
     if (summary && !summary.hidden) summary.innerHTML = buildCardSummary(row);
   });
+  const disc = Math.max(0, parseFloat(document.getElementById('discountInput').value) || 0);
+  const tax = Math.max(0, parseFloat(document.getElementById('taxInput').value) || 0);
+  const grand = Math.max(0, subNet - disc + tax);
   document.getElementById('sumSub').textContent = subNet.toFixed(2);
-  document.getElementById('sumGrand').textContent = subNet.toFixed(2);
+  document.getElementById('sumDisc').textContent = disc.toFixed(2);
+  document.getElementById('sumTax').textContent = tax.toFixed(2);
+  document.getElementById('sumGrand').textContent = grand.toFixed(2);
   syncPaymentType();
 }
 function syncPaymentType() {
