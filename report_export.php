@@ -195,7 +195,7 @@ switch ($report) {
             $retail = (float)$p['retail_value'];
             $cost = (float)$p['cost_value'];
             $rows[] = [
-                $p['name'], $p['generic_name'], reportInventoryBucketLabel($p['bucket']) . ' / ' . $p['category'],
+                $p['name'], $p['generic_name'], productTypeLabel($p['product_type'] ?? '') . ' · ' . $p['category'],
                 $p['stock'], $p['reorder_level'], $p['units_purchased'], $p['qty_sold'], $p['units_returned'],
                 $p['last_purchase'] ? substr($p['last_purchase'], 0, 10) : '', $p['last_sale'] ?: '',
                 round($cost, 2), round($retail, 2), round($retail - $cost, 2),

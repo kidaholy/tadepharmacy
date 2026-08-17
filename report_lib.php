@@ -1432,53 +1432,15 @@ function reportSalesHistoryCount(PDO $pdo, array $dates, array $filters): int {
 
 /* ─── INVENTORY REPORT (report_inventory.php) ────────────────────────────── */
 
-/** Top-level inventory category buckets shown throughout the Inventory Report. */
-function reportInventoryBuckets(): array {
-    return [
-        'medication'        => 'Medication',
-        'cosmetic'          => 'Cosmetic',
-        'medical_equipment' => 'Medical Equipment',
-        'medical_supply'    => 'Medical Supply',
-        'supplement'        => 'Supplement',
-        'personal_care'     => 'Personal Care',
-        'other'             => 'Other',
-    ];
-}
-
-function reportInventoryBucketLabel(?string $key): string {
-    $b = reportInventoryBuckets();
-    return $b[$key] ?? 'Other';
-}
-
-/**
- * SQL CASE that classifies a product (aliases m / c) into one of the inventory
- * buckets: Medication, Cosmetic, Medical Equipment, Medical Supply, Supplement,
- * Personal Care or Other.
- */
-function reportInventoryBucketExpr(string $m = 'm', string $c = 'c'): string {
-    return "CASE
-        WHEN LOWER(COALESCE($m.product_type, $c.product_type, '')) = 'cosmetic' THEN 'cosmetic'
-        WHEN LOWER(COALESCE($m.product_type, $c.product_type, '')) = 'equipment' THEN 'medical_equipment'
-        WHEN LOWER(COALESCE($c.name, '')) LIKE '%cosmetic%' THEN 'cosmetic'
-        WHEN LOWER(COALESCE($c.name, '')) LIKE '%equipment%' OR LOWER(COALESCE($c.name, '')) LIKE '%device%' THEN 'medical_equipment'
-        WHEN LOWER(COALESCE($c.name, '')) LIKE '%supplement%' OR LOWER(COALESCE($c.name, '')) LIKE '%vitamin%' THEN 'supplement'
-        WHEN LOWER(COALESCE($c.name, '')) LIKE '%personal care%' OR LOWER(COALESCE($c.name, '')) LIKE '%hygiene%' OR LOWER(COALESCE($c.name, '')) LIKE '%body care%' THEN 'personal_care'
-        WHEN LOWER(COALESCE($c.name, '')) LIKE '%supply%' OR LOWER(COALESCE($c.name, '')) LIKE '%consumable%' OR LOWER(COALESCE($c.name, '')) LIKE '%disposable%' THEN 'medical_supply'
-        WHEN LOWER(COALESCE($c.name, '')) = 'other' OR $m.category_id IS NULL THEN 'other'
-        ELSE 'medication'
-    END";
-}
-
-/** Parse the Inventory Report's own filter set (product, bucket category, supplier, brand, batch, stock, expiry). */
+/** Parse the Inventory Report's own filter set (product, category, supplier, brand, batch, stock, expiry). */
 function reportInventoryFilters(array $input): array {
     $validStock = ['all', 'in', 'low', 'out', 'over', 'fast', 'slow', 'dead'];
     $validExpiry = ['all', 'expiring', 'expired', 'safe'];
     $stock = trim((string)($input['stock'] ?? 'all'));
     $expiry = trim((string)($input['expiry'] ?? 'all'));
-    $cat = trim((string)($input['category'] ?? ''));
     return [
         'product'  => (int)($input['product'] ?? 0),
-        'category' => isset(reportInventoryBuckets()[$cat]) ? $cat : '',
+        'category' => (int)($input['category'] ?? 0),
         'supplier' => (int)($input['supplier'] ?? 0),
         'brand'    => trim((string)($input['brand'] ?? '')),
         'batch'    => trim((string)($input['batch'] ?? '')),
@@ -1509,7 +1471,7 @@ function reportInventoryMedWhere(array $f): array {
     $and = [];
     $params = [];
     if ($f['product'])      { $and[] = 'm.id = ?';                            $params[] = $f['product']; }
-    if ($f['category'])     { $and[] = reportInventoryBucketExpr() . ' = ?';  $params[] = $f['category']; }
+    if ($f['category'])     { $and[] = 'm.category_id = ?';                    $params[] = $f['category']; }
     if ($f['supplier'])     { $and[] = 'EXISTS (SELECT 1 FROM batches sb WHERE sb.medicine_id = m.id AND sb.supplier_id = ?)'; $params[] = $f['supplier']; }
     if ($f['brand'] !== '') { $and[] = 'm.name LIKE ?';                       $params[] = '%' . $f['brand'] . '%'; }
     if ($f['batch'] !== '') { $and[] = 'EXISTS (SELECT 1 FROM batches bb WHERE bb.medicine_id = m.id AND bb.batch_number LIKE ?)'; $params[] = '%' . $f['batch'] . '%'; }
@@ -1521,7 +1483,7 @@ function reportInventoryBatchWhere(array $f): array {
     $and = [];
     $params = [];
     if ($f['product'])      { $and[] = 'b.medicine_id = ?';                   $params[] = $f['product']; }
-    if ($f['category'])     { $and[] = reportInventoryBucketExpr() . ' = ?';  $params[] = $f['category']; }
+    if ($f['category'])     { $and[] = 'm.category_id = ?';                   $params[] = $f['category']; }
     if ($f['supplier'])     { $and[] = 'b.supplier_id = ?';                   $params[] = $f['supplier']; }
     if ($f['brand'] !== '') { $and[] = 'm.name LIKE ?';                       $params[] = '%' . $f['brand'] . '%'; }
     if ($f['batch'] !== '') { $and[] = 'b.batch_number LIKE ?';               $params[] = '%' . $f['batch'] . '%'; }
@@ -1574,8 +1536,9 @@ function reportInventoryProducts(PDO $pdo, array $dates, array $f): array {
     $sql = "
         SELECT m.id, m.name, m.generic_name, m.unit, m.barcode, m.sku,
                COALESCE(m.reorder_level, 10) AS reorder_level,
+               COALESCE(c.id, 0) AS category_id,
                COALESCE(c.name, 'Uncategorized') AS category,
-               " . reportInventoryBucketExpr() . " AS bucket,
+               COALESCE(m.product_type, c.product_type, 'medicine') AS product_type,
                COALESCE(st.stock, 0) AS stock,
                COALESCE(st.avg_cost, 0) AS avg_cost,
                COALESCE(st.avg_sell, 0) AS avg_sell,
@@ -1625,8 +1588,7 @@ function reportInventoryExpiryRows(PDO $pdo, array $dates, array $f): array {
                COALESCE(sup.name, '—') AS supplier_name,
                CAST(julianday(b.expiry_date) - julianday('now') AS INTEGER) AS days_remaining,
                b.quantity * b.purchase_price AS cost_value,
-               b.quantity * b.selling_price AS retail_value,
-               " . reportInventoryBucketExpr() . " AS bucket
+               b.quantity * b.selling_price AS retail_value
         FROM batches b
         JOIN medicines m ON m.id = b.medicine_id
         LEFT JOIN categories c ON c.id = m.category_id
@@ -1680,36 +1642,72 @@ function reportInventorySummary(PDO $pdo, array $dates, array $f): array {
     ];
 }
 
-/** Overview totals + distribution across the inventory category buckets. */
+/**
+ * Overview totals + distribution grouped by actual category, then by product
+ * type (Medicine / Cosmetics / Equipment / Other) — mirroring the Sales Report's
+ * Category Sales layout. Rows carry the category id so clicking filters the report.
+ */
 function reportInventoryOverview(PDO $pdo, array $dates, array $f): array {
     $products = reportInventoryProducts($pdo, $dates, $f);
-    $dist = [];
-    foreach (reportInventoryBuckets() as $key => $label) {
-        $dist[$key] = ['key' => $key, 'label' => $label, 'products' => 0, 'units' => 0, 'cost' => 0, 'retail' => 0];
-    }
+
+    // One aggregate row per actual category.
+    $byCat = [];
     foreach ($products as $p) {
-        $k = isset($dist[$p['bucket']]) ? $p['bucket'] : 'other';
-        $dist[$k]['products']++;
-        $dist[$k]['units'] += (float)$p['stock'];
-        $dist[$k]['cost'] += (float)$p['cost_value'];
-        $dist[$k]['retail'] += (float)$p['retail_value'];
+        $id = (int)$p['category_id'];
+        if (!isset($byCat[$id])) {
+            $byCat[$id] = [
+                'id'       => $id,
+                'category' => $p['category'],
+                'type'     => reportCategoryType($p['product_type'] ?? null, null, $p['category']),
+                'products' => 0, 'units' => 0, 'cost' => 0, 'retail' => 0,
+            ];
+        }
+        $byCat[$id]['products']++;
+        $byCat[$id]['units'] += (float)$p['stock'];
+        $byCat[$id]['cost'] += (float)$p['cost_value'];
+        $byCat[$id]['retail'] += (float)$p['retail_value'];
     }
+
+    // Group categories by product type, ordered Medicine → Cosmetics → Equipment → Other.
+    $order = ['medicine' => 0, 'cosmetic' => 1, 'equipment' => 2, 'other' => 3];
+    uasort($byCat, function ($a, $b) use ($order) {
+        $o = ($order[$a['type']] ?? 9) <=> ($order[$b['type']] ?? 9);
+        return $o !== 0 ? $o : ($b['cost'] <=> $a['cost']);
+    });
+    $groups = [];
+    foreach ($byCat as $row) {
+        $t = $row['type'];
+        if (!isset($groups[$t])) $groups[$t] = ['type' => $t, 'label' => productTypeLabel($t), 'rows' => []];
+        $groups[$t]['rows'][] = $row;
+    }
+
     $totals = ['products' => count($products), 'units' => 0, 'cost' => 0, 'retail' => 0];
-    foreach ($dist as $d) {
-        $totals['units'] += $d['units'];
-        $totals['cost'] += $d['cost'];
-        $totals['retail'] += $d['retail'];
+    $donut = [];
+    foreach ($groups as $t => $grp) {
+        $gCost = $gRetail = $gUnits = 0;
+        foreach ($grp['rows'] as $r) {
+            $gCost += $r['cost'];
+            $gRetail += $r['retail'];
+            $gUnits += $r['units'];
+        }
+        $groups[$t]['units'] = $gUnits;
+        $groups[$t]['cost'] = $gCost;
+        $groups[$t]['retail'] = $gRetail;
+        $totals['units'] += $gUnits;
+        $totals['cost'] += $gCost;
+        $totals['retail'] += $gRetail;
+        if ($gCost > 0) $donut[] = ['label' => $grp['label'], 'value' => round($gCost, 2)];
     }
     $totals['profit'] = $totals['retail'] - $totals['cost'];
     $totals['avg_value'] = $totals['products'] > 0 ? $totals['cost'] / $totals['products'] : 0;
-    return ['totals' => $totals, 'dist' => array_values($dist)];
+    return ['totals' => $totals, 'groups' => array_values($groups), 'donut' => $donut];
 }
 
 /** Everything the Inventory Report shows for one selected product. */
 function reportInventoryProductDetail(PDO $pdo, int $medId): ?array {
     $stmt = $pdo->prepare("
         SELECT m.*, COALESCE(c.name, 'Uncategorized') AS category_name,
-               " . reportInventoryBucketExpr() . " AS bucket,
+               COALESCE(m.product_type, c.product_type, 'medicine') AS product_type,
                COALESCE(st.stock, 0) AS stock,
                COALESCE(st.avg_cost, 0) AS avg_cost,
                COALESCE(st.avg_sell, 0) AS avg_sell,

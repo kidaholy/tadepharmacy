@@ -56,7 +56,15 @@ $expQS   = fn(string $k) => reportInventoryQueryString($dates, array_merge($f, [
 $catQS   = fn(string $k) => reportInventoryQueryString($dates, array_merge($f, ['category' => $k, 'stock' => 'all', 'expiry' => 'all']));
 
 $cur = ' ' . getSetting('currency', 'ETB');
-$buckets = reportInventoryBuckets();
+// Category dropdown data, grouped by product type like the Sales Report filter.
+$catGroups = [];
+foreach ($options['categories'] as $c) {
+    $catGroups[$c['product_type']][] = $c;
+}
+$catLabels = ['medicine' => 'Medicine', 'cosmetic' => 'Cosmetics', 'equipment' => 'Equipment', 'other' => 'Other'];
+foreach (array_keys($catGroups) as $pt) { if (!isset($catLabels[$pt])) $catLabels[$pt] = ucfirst($pt); }
+$catNameById = [];
+foreach ($options['categories'] as $c) { $catNameById[(int)$c['id']] = $c['name']; }
 $productLabels = [];
 foreach ($options['products'] as $p) {
     $productLabels[(string)$p['id']] = $p['name'] . ($p['generic_name'] ? ' — ' . $p['generic_name'] : '');
@@ -101,8 +109,13 @@ renderSidebar();
         <label>Category</label>
         <select name="category">
           <option value="">All Categories</option>
-          <?php foreach ($buckets as $key => $label): ?>
-          <option value="<?= $key ?>" <?= $f['category'] === $key ? 'selected' : '' ?>><?= $label ?></option>
+          <?php foreach ($catLabels as $pt => $ptLabel): ?>
+            <?php if (empty($catGroups[$pt])) continue; ?>
+          <optgroup label="<?= htmlspecialchars($ptLabel) ?>">
+            <?php foreach ($catGroups[$pt] as $c): ?>
+            <option value="<?= $c['id'] ?>" <?= $f['category'] == $c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
+            <?php endforeach; ?>
+          </optgroup>
           <?php endforeach; ?>
         </select>
       </div>
@@ -153,7 +166,7 @@ renderSidebar();
   <?php
   $chips = ['Period: ' . $dates['label']];
   if ($f['product']) { foreach ($options['products'] as $p) { if ((int)$p['id'] === (int)$f['product']) { $chips[] = 'Product: ' . $p['name']; break; } } }
-  if ($f['category']) $chips[] = 'Category: ' . reportInventoryBucketLabel($f['category']);
+  if ($f['category']) $chips[] = 'Category: ' . ($catNameById[(int)$f['category']] ?? '#' . (int)$f['category']);
   if ($f['supplier']) { foreach ($options['suppliers'] as $s) { if ((int)$s['id'] === (int)$f['supplier']) { $chips[] = 'Supplier: ' . $s['name']; break; } } }
   if ($f['brand'] !== '') $chips[] = 'Brand: ' . $f['brand'];
   if ($f['batch'] !== '') $chips[] = 'Batch: ' . $f['batch'];
@@ -198,11 +211,11 @@ renderSidebar();
     </div>
   </div>
   <div class="card">
-    <div class="card-header"><span class="card-title">Distribution by Category (Value)</span></div>
+    <div class="card-header"><span class="card-title">Distribution by Product Type (Value)</span></div>
     <div class="chart-wrap chart-donut">
       <canvas id="chartPayments"
-        data-labels='<?= json_encode(array_column(array_filter($overview['dist'], fn($d) => $d['cost'] > 0), 'label')) ?>'
-        data-values='<?= json_encode(array_map(fn($d) => round($d['cost'], 2), array_filter($overview['dist'], fn($d) => $d['cost'] > 0))) ?>'></canvas>
+        data-labels='<?= json_encode(array_column($overview['donut'], 'label')) ?>'
+        data-values='<?= json_encode(array_column($overview['donut'], 'value')) ?>'></canvas>
     </div>
   </div>
 </div>
@@ -212,17 +225,37 @@ renderSidebar();
   <div class="table-wrap"><table>
     <thead><tr><th>Category</th><th>Products</th><th>Units</th><th>Cost Value</th><th>Retail Value</th><th>Expected Profit</th></tr></thead>
     <tbody>
-    <?php foreach ($overview['dist'] as $d): ?>
-      <tr style="<?= $f['category'] === $d['key'] ? 'background:var(--bg-600);' : '' ?>">
-        <td>
-          <a href="?<?= htmlspecialchars($catQS($d['key'])) ?>" style="font-weight:600;"><?= htmlspecialchars($d['label']) ?></a>
-          <?php if ($f['category'] === $d['key']): ?><span class="badge badge-blue" style="margin-left:8px;">filtered</span><?php endif; ?>
+    <?php if (empty($overview['groups'])): ?>
+      <tr><td colspan="6" style="text-align:center;padding:30px;color:var(--text-300);">No products match the current filters</td></tr>
+    <?php else: ?>
+    <?php foreach ($overview['groups'] as $grp): ?>
+      <tr style="background:var(--bg-500);">
+        <td colspan="6" style="font-weight:700;letter-spacing:0.3px;"><?= htmlspecialchars($grp['label']) ?></td>
+      </tr>
+      <?php
+      $gTot = ['products' => 0, 'units' => 0, 'cost' => 0, 'retail' => 0];
+      foreach ($grp['rows'] as $d):
+          foreach ($gTot as $k => $v) $gTot[$k] += $d[$k];
+      ?>
+      <tr style="<?= $f['category'] === $d['id'] ? 'background:var(--bg-600);' : '' ?>">
+        <td style="padding-left:28px;">
+          <a href="?<?= htmlspecialchars($catQS($d['id'])) ?>" style="font-weight:600;"><?= htmlspecialchars($d['category']) ?></a>
+          <?php if ($f['category'] === $d['id']): ?><span class="badge badge-blue" style="margin-left:8px;">filtered</span><?php endif; ?>
         </td>
         <td style="text-align:center;"><?= number_format($d['products']) ?></td>
         <td style="text-align:center;"><?= number_format($d['units']) ?></td>
         <td><?= currency($d['cost']) ?></td>
         <td style="color:var(--accent2);font-weight:700;"><?= currency($d['retail']) ?></td>
         <td><?= currency($d['retail'] - $d['cost']) ?></td>
+      </tr>
+      <?php endforeach; ?>
+      <tr style="background:var(--bg-600);">
+        <td style="font-weight:700;"><?= htmlspecialchars($grp['label']) ?> Subtotal</td>
+        <td style="text-align:center;font-weight:600;"><?= number_format($gTot['products']) ?></td>
+        <td style="text-align:center;font-weight:600;"><?= number_format($gTot['units']) ?></td>
+        <td style="font-weight:700;"><?= currency($gTot['cost']) ?></td>
+        <td style="font-weight:700;color:var(--accent2);"><?= currency($gTot['retail']) ?></td>
+        <td style="font-weight:700;"><?= currency($gTot['retail'] - $gTot['cost']) ?></td>
       </tr>
     <?php endforeach; ?>
       <tr style="background:var(--bg-500);">
@@ -233,6 +266,7 @@ renderSidebar();
         <td style="font-weight:800;color:var(--accent2);"><?= currency($overview['totals']['retail']) ?></td>
         <td style="font-weight:700;"><?= currency($overview['totals']['profit']) ?></td>
       </tr>
+    <?php endif; ?>
     </tbody>
   </table></div>
 </div>
@@ -242,7 +276,7 @@ renderSidebar();
 <div class="card mb-20">
   <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
     <span class="card-title"><i data-lucide="package" style="width:16px;height:16px;"></i> Product Inventory Card</span>
-    <span class="badge badge-blue"><?= htmlspecialchars(reportInventoryBucketLabel($m['bucket'])) ?></span>
+    <span class="badge badge-blue"><?= htmlspecialchars(productTypeLabel($m['product_type'])) ?></span>
   </div>
   <div style="padding:20px;">
     <h3 style="font-size:19px;font-weight:800;letter-spacing:0.3px;margin-bottom:2px;"><?= htmlspecialchars(strtoupper((string)$m['name'])) ?></h3>
@@ -345,7 +379,7 @@ renderSidebar();
             <a href="?<?= htmlspecialchars(reportInventoryQueryString($dates, array_merge($f, ['product' => $p['id'], 'stock' => 'all', 'expiry' => 'all']))) ?>"><?= htmlspecialchars($p['name']) ?></a>
             <?php if ($p['generic_name']): ?><div style="font-size:12px;color:var(--text-300);font-weight:400;"><?= htmlspecialchars($p['generic_name']) ?></div><?php endif; ?>
           </td>
-          <td><?= htmlspecialchars(reportInventoryBucketLabel($p['bucket'])) ?><div style="font-size:12px;color:var(--text-300);"><?= htmlspecialchars($p['category']) ?></div></td>
+          <td><?= htmlspecialchars(productTypeLabel($p['product_type'] ?? '')) ?> · <?= htmlspecialchars($p['category']) ?></td>
           <td style="text-align:center;font-weight:600;"><?= number_format($p['stock']) ?></td>
           <td style="text-align:center;"><?= number_format($p['reorder_level']) ?></td>
           <td style="text-align:center;"><?= number_format($p['qty_sold']) ?></td>
