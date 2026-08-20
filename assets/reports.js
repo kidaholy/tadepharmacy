@@ -231,6 +231,7 @@ function switchSalesTrend(view, btn) {
 window.addEventListener('load', () => {
   toggleCustomDates();
   initReportTypeCategoryFilter();
+  initReportProductSearch();
   initReportCharts();
   initProductTrendChart();
   initSalesTrendChart();
@@ -248,19 +249,23 @@ function initReportTypeCategoryFilter() {
   if (!data || !typeSel || !catSel) return;
 
   typeSel.addEventListener('change', () => {
-    const productSel = document.getElementById('reportProduct');
-    if (productSel) productSel.value = '';
-    const hiddenProduct = document.getElementById('invProductId');
-    const productQ = document.getElementById('invProductQ');
-    if (hiddenProduct) hiddenProduct.value = '';
+    const productQ = document.getElementById('reportProductQ');
+    const hiddenProduct = document.getElementById('reportProductId');
+    const invProductQ = document.getElementById('invProductQ');
+    const invHidden = document.getElementById('invProductId');
     if (productQ) productQ.value = '';
+    if (hiddenProduct) hiddenProduct.value = '';
+    if (invProductQ) invProductQ.value = '';
+    if (invHidden) invHidden.value = '';
     rebuildReportCategoryOptions('');
     rebuildReportProductOptions();
     if (typeSel.form) typeSel.form.submit();
   });
   catSel.addEventListener('change', () => {
-    const productSel = document.getElementById('reportProduct');
-    if (productSel) productSel.value = '';
+    const productQ = document.getElementById('reportProductQ');
+    const hiddenProduct = document.getElementById('reportProductId');
+    if (productQ) productQ.value = '';
+    if (hiddenProduct) hiddenProduct.value = '';
     rebuildReportProductOptions();
     if (catSel.form) {
       catSel.disabled = false;
@@ -306,25 +311,47 @@ function rebuildReportProductOptions() {
     return true;
   };
 
-  const productSel = document.getElementById('reportProduct');
-  if (productSel) {
-    const current = productSel.value;
-    productSel.innerHTML = '';
-    productSel.appendChild(new Option('All Products', ''));
-    data.products.filter(match).forEach(p => {
-      const opt = new Option(p.name, String(p.id));
-      if (String(p.id) === current || String(p.id) === selected) opt.selected = true;
-      productSel.appendChild(opt);
-    });
-  }
-
-  const list = document.getElementById('invProductList');
+  // Rebuild the report product datalist
+  const list = document.getElementById('reportProductList');
   if (list) {
     list.innerHTML = '';
     data.products.filter(match).forEach(p => {
       const opt = document.createElement('option');
-      opt.value = p.name;
+      opt.value = p.name + (p.category ? ' — ' + p.category : '');
+      opt.dataset.id = String(p.id);
       list.appendChild(opt);
     });
   }
+
+  // Also rebuild the inventory report product datalist if present
+  const invList = document.getElementById('invProductList');
+  if (invList) {
+    invList.innerHTML = '';
+    data.products.filter(match).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      invList.appendChild(opt);
+    });
+  }
+}
+
+/** Sync the hidden product ID when the user types in the search box. */
+function initReportProductSearch() {
+  const q = document.getElementById('reportProductQ');
+  const hidden = document.getElementById('reportProductId');
+  if (!q || !hidden) return;
+  const data = reportFilterData();
+  if (!data) return;
+
+  q.addEventListener('input', () => {
+    const val = q.value.trim().toLowerCase();
+    if (!val) { hidden.value = ''; return; }
+    // Try exact match first, then partial
+    const found = data.products.find(p => p.name.toLowerCase() === val)
+      || data.products.find(p => p.name.toLowerCase().includes(val));
+    hidden.value = found ? String(found.id) : '';
+  });
+
+  // Also rebuild datalist on initial load
+  rebuildReportProductOptions();
 }

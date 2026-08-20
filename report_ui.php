@@ -173,6 +173,15 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
     $hasExtra = ($filters['type'] ?? '') !== '' || $filters['product'] || $filters['category'] || $filters['supplier']
         || $filters['customer'] !== '' || $filters['cashier'] || $filters['payment_method'] !== ''
         || $filters['sales_type'] !== '';
+    $productNameForInput = '';
+    if (!empty($filters['product'])) {
+        foreach ($options['products'] as $p) {
+            if ((int)$p['id'] === (int)$filters['product']) {
+                $productNameForInput = $p['name'] . ($p['generic_name'] ? ' — ' . $p['generic_name'] : '');
+                break;
+            }
+        }
+    }
     ?>
 <div class="card mb-20 no-print report-filters-card">
   <form method="GET" action="<?= htmlspecialchars($formAction) ?>" id="reportFilterForm">
@@ -195,17 +204,11 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
       </div>
       <?php if ($showProduct): ?>
       <div class="form-group">
-        <label>Product</label>
-        <select name="product" id="reportProduct">
-          <option value="">All Products</option>
-          <?php foreach ($options['products'] as $p):
-            $pType = $p['product_type'] ?? 'medicine';
-            if (($filters['type'] ?? '') !== '' && $pType !== $filters['type']) continue;
-            if (!empty($filters['category']) && (int)($p['category_id'] ?? 0) !== (int)$filters['category']) continue;
-          ?>
-          <option value="<?= $p['id'] ?>" <?= $filters['product'] == $p['id'] ? 'selected' : '' ?>><?= htmlspecialchars($p['name']) ?></option>
-          <?php endforeach; ?>
-        </select>
+        <label>Product <span style="color:var(--text-300);font-weight:400;">(type to search)</span></label>
+        <input type="text" id="reportProductQ" list="reportProductList" placeholder="Type to search product…" autocomplete="off"
+               value="<?= htmlspecialchars($productNameForInput ?? '') ?>">
+        <input type="hidden" name="product" id="reportProductId" value="<?= (int)$filters['product'] ?>">
+        <datalist id="reportProductList"></datalist>
       </div>
       <?php endif; ?>
       <?php renderReportTypeCategoryFields($filters, $options); ?>
