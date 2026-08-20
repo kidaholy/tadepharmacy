@@ -148,12 +148,39 @@ renderSidebar();
     <?php foreach (reportQueryParams($dates, $filters, ['tab' => 'search']) as $k=>$v): ?>
     <input type="hidden" name="<?= htmlspecialchars($k) ?>" value="<?= htmlspecialchars($v) ?>">
     <?php endforeach; ?>
-    <div class="search-bar" style="flex:1;"><i data-lucide="search"></i>
-      <input type="text" name="q" value="<?= htmlspecialchars($q) ?>" placeholder="Search by product name, generic name, brand, batch number, or barcode...">
+    <div style="flex:1;">
+      <label style="font-size:12px;color:var(--text-300);margin-bottom:4px;display:block;">Product <span style="font-weight:400;">(type to search, then select or press Enter)</span></label>
+      <input type="text" id="perfProductQ" list="perfProductList" placeholder="Type product name, generic, barcode or batch…" autocomplete="off"
+             value="<?= htmlspecialchars($q) ?>" style="width:100%;padding:8px 12px;font-size:13px;">
+      <input type="hidden" name="q" id="perfProductQHidden">
+      <datalist id="perfProductList">
+        <?php foreach ($options['products'] as $p): ?>
+        <option value="<?= htmlspecialchars($p['name']) ?>" data-id="<?= (int)$p['id'] ?>"></option>
+        <?php endforeach; ?>
+      </datalist>
     </div>
-    <button type="submit" class="btn btn-primary">Search</button>
+    <button type="submit" class="btn btn-primary" style="align-self:flex-end;">Search</button>
   </form>
 </div>
+<script>
+(function() {
+  var q = document.getElementById('perfProductQ');
+  var hidden = document.getElementById('perfProductQHidden');
+  var data = <?= json_encode(array_map(fn($p) => ['id' => (int)$p['id'], 'name' => $p['name']], $options['products']), JSON_UNESCAPED_UNICODE) ?>;
+  if (!q || !hidden) return;
+  q.addEventListener('input', function() {
+    var val = q.value.trim().toLowerCase();
+    if (!val) { hidden.value = ''; return; }
+    var found = data.find(function(p) { return p.name.toLowerCase() === val; })
+      || data.find(function(p) { return p.name.toLowerCase().indexOf(val) !== -1; });
+    if (found) {
+      hidden.value = found.name;
+    } else {
+      hidden.value = q.value;
+    }
+  });
+})();
+</script>
 
 <?php if ($tab === 'detail' && $productDetail):
   $m = $productDetail['medicine'];
@@ -200,7 +227,6 @@ renderSidebar();
       <div><span class="report-k">Purchase Cost</span><span class="report-v"><?= currency($m['avg_buy_price']) ?></span></div>
       <div><span class="report-k">Current Stock</span><span class="report-v"><?= number_format($m['current_stock']) ?></span></div>
       <div><span class="report-k">Number of Batches</span><span class="report-v"><?= number_format($productDetail['batch_count']) ?></span></div>
-      <div><span class="report-k">Barcode</span><span class="report-v"><?= htmlspecialchars($m['barcode'] ?? '—') ?></span></div>
       <div><span class="report-k">SKU</span><span class="report-v"><?= htmlspecialchars($m['sku'] ?? '—') ?></span></div>
       <div><span class="report-k">Inventory Value</span><span class="report-v"><?= currency($m['inventory_value']) ?></span></div>
     </div>
@@ -461,14 +487,14 @@ renderSidebar();
   <?php else: ?>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Product</th><th>Generic Name</th><th>Category</th><th>Barcode</th><th>Stock</th><th></th></tr></thead>
+      <thead><tr><th>Product</th><th>Generic Name</th><th>Category</th><th>Stock</th><th></th></tr></thead>
       <tbody>
       <?php foreach ($searchResults as $sr): ?>
       <tr>
         <td style="font-weight:600;"><?= htmlspecialchars($sr['name']) ?></td>
         <td><?= htmlspecialchars($sr['generic_name'] ?? '—') ?></td>
         <td><?= htmlspecialchars(productTypeLabel($sr['product_type'] ?? '') . ' · ' . ($sr['category'] ?? '—')) ?></td>
-        <td><?= htmlspecialchars($sr['barcode'] ?? '—') ?></td>
+
         <td><?= number_format($sr['current_stock'] ?? 0) ?></td>
         <td><a href="?med=<?= $sr['id'] ?>&<?= reportQueryString($dates, $filters) ?>" class="btn btn-primary btn-sm">View Report</a></td>
       </tr>
@@ -480,13 +506,39 @@ renderSidebar();
 </div>
 
 <?php else: ?>
-<!-- Empty state -->
+<!-- Product list to browse -->
 <div class="card mb-20">
-  <div style="padding:40px;text-align:center;">
-    <i data-lucide="search" style="width:48px;height:48px;color:var(--text-300);margin-bottom:12px;"></i>
-    <p style="font-size:15px;color:var(--text-300);">Search for a product to view its detailed performance report.</p>
-    <p style="font-size:13px;color:var(--text-300);margin-top:4px;">Search by product name, generic name, brand, batch number, or barcode.</p>
+  <div class="card-header"><span class="card-title">All Products — click Details for full performance</span></div>
+  <?php if (empty($products)): ?>
+  <p style="padding:20px;color:var(--text-300);">No products found for this period.</p>
+  <?php else: ?>
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th>#</th><th>Product</th><th>Category</th><th>Units Sold</th><th>Revenue</th><th>Profit</th><th>Stock</th><th></th></tr></thead>
+      <tbody>
+      <?php foreach (array_slice($products, 0, 50) as $i => $m): ?>
+      <tr>
+        <td><span class="badge badge-gray">#<?= $i + 1 ?></span></td>
+        <td style="font-weight:600;">
+          <a href="?med=<?= $m['id'] ?>&tab=detail&<?= reportQueryString($dates, $filters) ?>" style="color:var(--text-100);text-decoration:none;">
+            <?= htmlspecialchars($m['name']) ?>
+          </a>
+        </td>
+        <td><?= htmlspecialchars(productTypeLabel($m['product_type']) . ' · ' . $m['category']) ?></td>
+        <td><?= number_format($m['qty_sold']) ?></td>
+        <td style="color:var(--accent2);font-weight:700;"><?= currency($m['revenue']) ?></td>
+        <td><?= currency($m['gross_profit']) ?></td>
+        <td><?= number_format($m['current_stock']) ?></td>
+        <td><a href="?med=<?= $m['id'] ?>&tab=detail&<?= reportQueryString($dates, $filters) ?>" class="btn btn-ghost btn-sm">Details</a></td>
+      </tr>
+      <?php endforeach; ?>
+      </tbody>
+    </table>
   </div>
+  <?php if (count($products) > 50): ?>
+  <p style="padding:12px 20px;color:var(--text-300);font-size:12px;">Showing top 50 products. Use the search box above to find a specific product.</p>
+  <?php endif; ?>
+  <?php endif; ?>
 </div>
 <?php endif; ?>
 
@@ -495,20 +547,91 @@ renderSidebar();
 
 <!-- Compare Form -->
 <div class="card mb-20 no-print">
-  <form method="GET">
+  <form method="GET" id="compareForm">
     <?php foreach (reportQueryParams($dates, $filters, ['tab' => 'compare']) as $k=>$v): ?>
     <input type="hidden" name="<?= htmlspecialchars($k) ?>" value="<?= htmlspecialchars($v) ?>">
     <?php endforeach; ?>
-    <div class="form-group"><label>Select 2–5 products to compare (hold Ctrl/Cmd)</label>
-      <select name="compare[]" multiple size="6" style="min-height:120px;">
-        <?php foreach ($options['products'] as $p): ?>
-        <option value="<?= $p['id'] ?>" <?= in_array((int)$p['id'], $compare) ? 'selected' : '' ?>><?= htmlspecialchars($p['name']) ?></option>
-        <?php endforeach; ?>
-      </select>
+    <input type="hidden" name="compare" id="compareHidden" value="<?= htmlspecialchars(implode(',', $compare)) ?>">
+    <div class="form-group">
+      <label>Type to search, then click a product to add (2–5 products)</label>
+      <input type="text" id="compareSearchQ" list="compareSearchList" placeholder="Search product name…" autocomplete="off" style="width:100%;padding:8px 12px;font-size:13px;">
+      <datalist id="compareSearchList"></datalist>
+    </div>
+    <div id="compareSelected" style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;">
+      <?php foreach ($compare as $cid):
+        $cname = '';
+        foreach ($options['products'] as $p) { if ((int)$p['id'] === (int)$cid) { $cname = $p['name']; break; } }
+      ?>
+      <span class="badge badge-blue" style="font-weight:600;padding:4px 10px;cursor:pointer;" data-id="<?= (int)$cid ?>" onclick="removeCompare(<?= (int)$cid ?>)" title="Click to remove">
+        <?= htmlspecialchars($cname) ?> ×
+      </span>
+      <?php endforeach; ?>
     </div>
     <button type="submit" class="btn btn-primary"><i data-lucide="layers"></i> Compare</button>
   </form>
 </div>
+<script>
+(function() {
+  var selected = <?= json_encode($compareSelected) ?>;
+  var data = <?= json_encode(array_map(fn($p) => ['id' => (int)$p['id'], 'name' => $p['name']], $options['products']), JSON_UNESCAPED_UNICODE) ?>;
+  var q = document.getElementById('compareSearchQ');
+  var list = document.getElementById('compareSearchList');
+  var hidden = document.getElementById('compareHidden');
+  var selDiv = document.getElementById('compareSelected');
+  if (!q || !list) return;
+
+  function rebuildDatalist() {
+    list.innerHTML = '';
+    data.filter(function(p) { return selected.indexOf(p.id) === -1; }).forEach(function(p) {
+      var opt = document.createElement('option');
+      opt.value = p.name;
+      list.appendChild(opt);
+    });
+  }
+  function syncHidden() { hidden.value = selected.join(','); }
+  function renderBadges() {
+    selDiv.innerHTML = '';
+    selected.forEach(function(id) {
+      var p = data.find(function(x) { return x.id === id; });
+      if (!p) return;
+      var span = document.createElement('span');
+      span.className = 'badge badge-blue';
+      span.style.cssText = 'font-weight:600;padding:4px 10px;cursor:pointer;';
+      span.dataset.id = id;
+      span.title = 'Click to remove';
+      span.textContent = p.name + ' \u00d7';
+      span.onclick = function() { window.removeCompare(id); };
+      selDiv.appendChild(span);
+    });
+  }
+  q.addEventListener('input', function() {
+    var val = q.value.trim().toLowerCase();
+    if (!val) { rebuildDatalist(); return; }
+    list.innerHTML = '';
+    data.filter(function(p) {
+      return selected.indexOf(p.id) === -1 && p.name.toLowerCase().indexOf(val) !== -1;
+    }).forEach(function(p) {
+      var opt = document.createElement('option');
+      opt.value = p.name;
+      list.appendChild(opt);
+    });
+  });
+  q.addEventListener('change', function() {
+    var val = q.value.trim();
+    var found = data.find(function(p) { return p.name === val && selected.indexOf(p.id) === -1; });
+    if (found && selected.length < 5) {
+      selected.push(found.id);
+      syncHidden(); renderBadges(); rebuildDatalist();
+      q.value = '';
+    }
+  });
+  rebuildDatalist();
+  window.removeCompare = function(id) {
+    selected = selected.filter(function(x) { return x !== id; });
+    syncHidden(); renderBadges(); rebuildDatalist();
+  };
+})();
+</script>
 
 <?php if ($compareSliced): ?>
 <p style="color:var(--warning);font-size:13px;padding:0 22px 14px;">Comparison is limited to 5 products — showing the first 5 selected.</p>

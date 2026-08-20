@@ -291,7 +291,6 @@ renderSidebar();
     <div class="report-summary-grid" style="margin-top:16px;">
       <div><span class="report-k">Category</span><span class="report-v"><?= htmlspecialchars($m['category_name']) ?></span></div>
       <div><span class="report-k">Supplier</span><span class="report-v"><?= htmlspecialchars($productDetail['supplier']['supplier_name'] ?? '—') ?></span></div>
-      <div><span class="report-k">Barcode</span><span class="report-v"><?= htmlspecialchars($m['barcode'] ?? '—') ?></span></div>
       <div><span class="report-k">SKU</span><span class="report-v"><?= htmlspecialchars($m['sku'] ?? '—') ?></span></div>
       <div><span class="report-k">Current Stock</span><span class="report-v"><?= number_format($m['stock']) ?> <?= htmlspecialchars($m['unit']) ?></span></div>
       <div><span class="report-k">Reorder Level</span><span class="report-v"><?= number_format($m['reorder_level']) ?></span></div>
