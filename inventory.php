@@ -9,6 +9,13 @@ $msg = '';
 $search = trim($_GET['q'] ?? '');
 $filter = $_GET['filter'] ?? 'all';
 $medId  = (int)($_GET['med'] ?? 0);
+$typeFilter = trim($_GET['type'] ?? '');
+if ($typeFilter !== '' && !isset(productTypes()[$typeFilter])) {
+    $typeFilter = '';
+}
+$catFilter = (int)($_GET['cat'] ?? 0);
+$categoriesByType = categoriesByProductType($pdo);
+$typeCategories = $typeFilter ? ($categoriesByType[$typeFilter] ?? []) : [];
 
 // Batch edit
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -88,6 +95,14 @@ $where  = [];
 if ($search) {
     $where[] = "(m.name LIKE ? OR b.batch_number LIKE ?)";
     $params[] = "%$search%"; $params[] = "%$search%";
+}
+if ($typeFilter) {
+    $where[] = "COALESCE(m.product_type, 'medicine') = ?";
+    $params[] = $typeFilter;
+}
+if ($catFilter) {
+    $where[] = "m.category_id = ?";
+    $params[] = $catFilter;
 }
 
 if ($viewBatches) {
@@ -173,22 +188,45 @@ $counts = [
     ")->fetchColumn(),
 ];
 
+$typeCounts = ['all' => 0, 'medicine' => 0, 'cosmetic' => 0, 'equipment' => 0];
+foreach ($pdo->query("
+    SELECT COALESCE(m.product_type,'medicine') AS t, COUNT(DISTINCT m.id) AS c
+    FROM medicines m
+    JOIN batches b ON b.medicine_id = m.id
+    GROUP BY t
+") as $row) {
+    if (isset($typeCounts[$row['t']])) {
+        $typeCounts[$row['t']] = (int)$row['c'];
+    }
+    $typeCounts['all'] += (int)$row['c'];
+}
+
+$invExtra = array_filter([
+    'filter' => $filter !== 'all' ? $filter : null,
+    'q' => $search ?: null,
+]);
+
 renderHead('Inventory');
 renderSidebar();
 ?>
 <div id="sidebarOverlay" class="overlay-bg" onclick="toggleSidebar()"></div>
 <div class="main-content">
-<?php renderTopbar('Inventory', 'Stock by medicine — extra expiry dates stay on the same product'); ?>
+<?php renderTopbar('Inventory', 'Filter by Medicine, Cosmetics, or Equipment — then a detail like Skincare'); ?>
 <div class="page-body">
 
 <?php if ($msg): ?><div class="alert alert-success auto-hide"><i data-lucide="check-circle"></i><?= htmlspecialchars($msg) ?></div><?php endif; ?>
 <?php if (isset($error) && $error): ?><div class="alert alert-danger"><i data-lucide="x-circle"></i><?= htmlspecialchars($error) ?></div><?php endif; ?>
 
+<?php renderTypeTabs('inventory.php', $typeFilter, $typeCounts, $invExtra, true); ?>
+<?php if ($typeFilter): ?>
+<?php renderCategoryChips('inventory.php', $typeFilter, $catFilter, $typeCategories, $invExtra); ?>
+<?php endif; ?>
+
 <!-- Filter tabs -->
 <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
   <?php
   $tabs = [
-    ['key'=>'all',      'label'=>'All Medicines',  'cnt'=>$counts['all'],      'class'=>'badge-blue'],
+    ['key'=>'all',      'label'=>'All Stock',       'cnt'=>$counts['all'],      'class'=>'badge-blue'],
     ['key'=>'low',      'label'=>'Low Stock',       'cnt'=>$counts['low'],      'class'=>'badge-orange'],
     ['key'=>'expiring', 'label'=>'Expiring Soon',   'cnt'=>$counts['expiring'], 'class'=>'badge-orange'],
     ['key'=>'expired',  'label'=>'Expired',         'cnt'=>$counts['expired'],  'class'=>'badge-red'],
@@ -196,8 +234,14 @@ renderSidebar();
   ];
   foreach ($tabs as $tab):
     $active = $filter === $tab['key'];
+    $tabQs = http_build_query(array_filter([
+        'filter' => $tab['key'] !== 'all' ? $tab['key'] : null,
+        'type' => $typeFilter ?: null,
+        'cat' => $catFilter ?: null,
+        'q' => $search ?: null,
+    ]));
   ?>
-  <a href="inventory.php?filter=<?= $tab['key'] ?><?= $search ? '&q=' . urlencode($search) : '' ?>"
+  <a href="inventory.php<?= $tabQs ? '?' . htmlspecialchars($tabQs) : '' ?>"
      class="btn <?= $active ? 'btn-primary' : 'btn-ghost' ?>" style="gap:8px;">
     <?= $tab['label'] ?>
     <span class="badge <?= $tab['class'] ?>"><?= $tab['cnt'] ?></span>
@@ -211,16 +255,18 @@ renderSidebar();
       <?php if ($viewBatches): ?>
         <?= htmlspecialchars($focusMedName) ?> — batches (<?= count($batches) ?>)
       <?php else: ?>
-        Medicines (<?= count($stockRows) ?>)
+        <?= htmlspecialchars($typeFilter ? (productTypeMeta()[$typeFilter]['plural'] ?? 'Stock') : 'Stock') ?> (<?= count($stockRows) ?>)
       <?php endif; ?>
     </span>
     <form method="GET" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <input type="hidden" name="filter" value="<?= htmlspecialchars($filter) ?>">
+      <?php if ($typeFilter): ?><input type="hidden" name="type" value="<?= htmlspecialchars($typeFilter) ?>"><?php endif; ?>
+      <?php if ($catFilter): ?><input type="hidden" name="cat" value="<?= (int)$catFilter ?>"><?php endif; ?>
       <?php if ($viewBatches): ?>
       <input type="hidden" name="med" value="<?= $medId ?>">
-      <a href="inventory.php?filter=<?= urlencode($filter) ?>" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left"></i> All medicines</a>
+      <a href="inventory.php?<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left"></i> All products</a>
       <?php endif; ?>
-      <div class="search-bar"><i data-lucide="search"></i><input type="text" name="q" value="<?= htmlspecialchars($search) ?>" placeholder="Search medicine or batch..."></div>
+      <div class="search-bar"><i data-lucide="search"></i><input type="text" name="q" value="<?= htmlspecialchars($search) ?>" placeholder="Search product or batch..."></div>
       <button type="submit" class="btn btn-ghost btn-sm">Search</button>
     </form>
   </div>
@@ -314,7 +360,7 @@ renderSidebar();
       </thead>
       <tbody>
       <?php if (empty($stockRows)): ?>
-        <tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-300);">No medicines match your filter</td></tr>
+        <tr><td colspan="7" style="text-align:center;padding:40px;color:var(--text-300);">No products match your filter</td></tr>
       <?php else: ?>
       <?php foreach ($stockRows as $r):
         $noExpiry = isNoExpiryDate($r['next_expiry'] ?? '');
@@ -342,7 +388,7 @@ renderSidebar();
         <td style="font-size:12px;"><?= formatExpiryDate($r['next_expiry'] ?? '') ?></td>
         <td><span class="badge <?= $statusClass ?>"><?= $statusLabel ?></span></td>
         <td>
-          <a href="inventory.php?med=<?= (int)$r['medicine_id'] ?>&filter=<?= urlencode($filter) ?>" class="btn btn-ghost btn-sm">View batches</a>
+          <a href="inventory.php?med=<?= (int)$r['medicine_id'] ?>&<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm">View batches</a>
         </td>
       </tr>
       <?php endforeach; ?>

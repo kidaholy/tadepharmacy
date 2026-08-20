@@ -109,8 +109,14 @@ function reportParseDateRange(array $input): array {
     return compact('from', 'to', 'preset', 'prevFrom', 'prevTo', 'days', 'label');
 }
 
+function reportParseProductType(array $input): string {
+    $type = trim((string)($input['type'] ?? ''));
+    return isset(productTypes()[$type]) ? $type : '';
+}
+
 function reportParseFilters(array $input): array {
     return [
+        'type'            => reportParseProductType($input),
         'product'         => (int)($input['product'] ?? 0),
         'category'        => (int)($input['category'] ?? 0),
         'supplier'        => (int)($input['supplier'] ?? 0),
@@ -123,7 +129,20 @@ function reportParseFilters(array $input): array {
 }
 
 function reportNeedsItemJoin(array $filters): bool {
-    return $filters['product'] > 0 || $filters['category'] > 0 || $filters['supplier'] > 0;
+    return $filters['product'] > 0 || $filters['category'] > 0 || $filters['supplier'] > 0
+        || ($filters['type'] ?? '') !== '';
+}
+
+function reportApplyTypeCategory(array $filters, string $medAlias, array &$where, array &$params): void {
+    $type = $filters['type'] ?? '';
+    if ($type !== '') {
+        $where[] = "COALESCE($medAlias.product_type, 'medicine') = ?";
+        $params[] = $type;
+    }
+    if (!empty($filters['category'])) {
+        $where[] = "$medAlias.category_id = ?";
+        $params[] = (int)$filters['category'];
+    }
 }
 
 function reportBuildSalesContext(array $filters, string $saleAlias = 's'): array {
@@ -166,10 +185,10 @@ function reportBuildSalesContext(array $filters, string $saleAlias = 's'): array
             $where[]  = 'si.medicine_id = ?';
             $params[] = $filters['product'];
         }
-        if ($filters['category']) {
-            $joins[]  = 'JOIN medicines mf ON mf.id = si.medicine_id';
-            $where[]  = 'mf.category_id = ?';
-            $params[] = $filters['category'];
+        $needMed = !empty($filters['category']) || ($filters['type'] ?? '') !== '';
+        if ($needMed) {
+            $joins[] = 'JOIN medicines mf ON mf.id = si.medicine_id';
+            reportApplyTypeCategory($filters, 'mf', $where, $params);
         }
         if ($filters['supplier']) {
             $joins[]  = 'JOIN batches bf ON bf.id = si.batch_id';
@@ -200,10 +219,7 @@ function reportItemFilterContext(array $filters, string $from, string $to): arra
         $where[] = 'si.medicine_id = ?';
         $params[] = $filters['product'];
     }
-    if ($filters['category']) {
-        $where[] = 'm.category_id = ?';
-        $params[] = $filters['category'];
-    }
+    reportApplyTypeCategory($filters, 'm', $where, $params);
     if ($filters['supplier']) {
         $where[] = 'b.supplier_id = ?';
         $params[] = $filters['supplier'];
@@ -273,7 +289,7 @@ function reportTrendMeta(float $current, float $previous, bool $higherIsGood = t
 
 function reportFilterOptions(PDO $pdo): array {
     return [
-        'products'   => $pdo->query("SELECT id, name, generic_name, barcode, sku FROM medicines ORDER BY name")->fetchAll(),
+        'products'   => $pdo->query("SELECT id, name, generic_name, barcode, sku, COALESCE(product_type,'medicine') AS product_type, category_id FROM medicines ORDER BY name")->fetchAll(),
         // Categories ordered by product type (Medicine / Cosmetics / Equipment) so the
         // filter dropdown can group them instead of mixing e.g. Antibiotics with Haircare.
         'categories' => $pdo->query("SELECT id, name, COALESCE(product_type, 'medicine') AS product_type FROM categories ORDER BY product_type, name COLLATE NOCASE")->fetchAll(),
@@ -288,6 +304,7 @@ function reportQueryParams(array $dates, array $filters, array $extra = []): arr
         'preset'          => $dates['preset'],
         'from'            => $dates['from'],
         'to'              => $dates['to'],
+        'type'            => $filters['type'] ?? null,
         'product'         => $filters['product'] ?: null,
         'category'        => $filters['category'] ?: null,
         'supplier'        => $filters['supplier'] ?: null,
@@ -923,6 +940,10 @@ function reportSlowMovingProducts(PDO $pdo, array $dates, array $filters, int $l
 
     $extraWhere = '';
     $extraParams = [];
+    if (($filters['type'] ?? '') !== '') {
+        $extraWhere .= ' AND COALESCE(m.product_type, \'medicine\') = ?';
+        $extraParams[] = $filters['type'];
+    }
     if ($filters['category']) {
         $extraWhere .= ' AND m.category_id = ?';
         $extraParams[] = $filters['category'];
@@ -1335,10 +1356,9 @@ function reportSalesReturns(PDO $pdo, array $dates, array $filters): array {
     $params = [$from, $to];
     $joins  = [];
 
-    if ($filters['category']) {
+    if (!empty($filters['category']) || ($filters['type'] ?? '') !== '') {
         $joins[] = 'JOIN medicines mr ON mr.id = sr.medicine_id';
-        $where[] = 'mr.category_id = ?';
-        $params[] = $filters['category'];
+        reportApplyTypeCategory($filters, 'mr', $where, $params);
     }
     if ($filters['customer']) {
         $joins[] = 'LEFT JOIN customers cust ON cust.id = s.customer_id';
@@ -1439,6 +1459,7 @@ function reportInventoryFilters(array $input): array {
     $stock = trim((string)($input['stock'] ?? 'all'));
     $expiry = trim((string)($input['expiry'] ?? 'all'));
     return [
+        'type'     => reportParseProductType($input),
         'product'  => (int)($input['product'] ?? 0),
         'category' => (int)($input['category'] ?? 0),
         'supplier' => (int)($input['supplier'] ?? 0),
@@ -1455,6 +1476,7 @@ function reportInventoryQueryString(array $dates, array $f, array $extra = []): 
         'preset'   => $dates['preset'],
         'from'     => $dates['from'],
         'to'       => $dates['to'],
+        'type'     => ($f['type'] ?? '') !== '' ? $f['type'] : null,
         'product'  => $f['product'] ?: null,
         'category' => $f['category'] ?: null,
         'supplier' => $f['supplier'] ?: null,
@@ -1471,6 +1493,7 @@ function reportInventoryMedWhere(array $f): array {
     $and = [];
     $params = [];
     if ($f['product'])      { $and[] = 'm.id = ?';                            $params[] = $f['product']; }
+    if (($f['type'] ?? '') !== '') { $and[] = "COALESCE(m.product_type, 'medicine') = ?"; $params[] = $f['type']; }
     if ($f['category'])     { $and[] = 'm.category_id = ?';                    $params[] = $f['category']; }
     if ($f['supplier'])     { $and[] = 'EXISTS (SELECT 1 FROM batches sb WHERE sb.medicine_id = m.id AND sb.supplier_id = ?)'; $params[] = $f['supplier']; }
     if ($f['brand'] !== '') { $and[] = 'm.name LIKE ?';                       $params[] = '%' . $f['brand'] . '%'; }
@@ -1483,6 +1506,7 @@ function reportInventoryBatchWhere(array $f): array {
     $and = [];
     $params = [];
     if ($f['product'])      { $and[] = 'b.medicine_id = ?';                   $params[] = $f['product']; }
+    if (($f['type'] ?? '') !== '') { $and[] = "COALESCE(m.product_type, 'medicine') = ?"; $params[] = $f['type']; }
     if ($f['category'])     { $and[] = 'm.category_id = ?';                   $params[] = $f['category']; }
     if ($f['supplier'])     { $and[] = 'b.supplier_id = ?';                   $params[] = $f['supplier']; }
     if ($f['brand'] !== '') { $and[] = 'm.name LIKE ?';                       $params[] = '%' . $f['brand'] . '%'; }

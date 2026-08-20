@@ -30,6 +30,10 @@ function reportActiveFilterChips(array $dates, array $filters, array $options): 
             }
         }
     }
+    if (!empty($filters['type'])) {
+        $meta = productTypeMeta()[$filters['type']] ?? null;
+        $chips[] = 'Type: ' . ($meta['title'] ?? ucfirst($filters['type']));
+    }
     if (!empty($filters['category'])) {
         foreach ($options['categories'] as $c) {
             if ((int)$c['id'] === (int)$filters['category']) {
@@ -62,12 +66,111 @@ function reportActiveFilterChips(array $dates, array $filters, array $options): 
     return $chips;
 }
 
+function reportTypeCategoryGroups(array $categories): array {
+    $groups = ['medicine' => [], 'cosmetic' => [], 'equipment' => []];
+    foreach ($categories as $c) {
+        $pt = $c['product_type'] ?? 'medicine';
+        if (isset($groups[$pt])) {
+            $groups[$pt][] = ['id' => (int)$c['id'], 'name' => $c['name']];
+        }
+    }
+    foreach ($groups as $pt => $list) {
+        $groups[$pt] = categoryDetailsForType($list, $pt);
+    }
+    return $groups;
+}
+
+function reportTypeCategoryFilterData(array $filters, array $options): array {
+    $groups = reportTypeCategoryGroups($options['categories'] ?? []);
+    $products = [];
+    foreach ($options['products'] ?? [] as $p) {
+        $products[] = [
+            'id' => (int)$p['id'],
+            'name' => $p['name'],
+            'type' => $p['product_type'] ?? 'medicine',
+            'category_id' => (int)($p['category_id'] ?? 0),
+        ];
+    }
+    return [
+        'types' => [
+            'medicine' => 'Medicine',
+            'cosmetic' => 'Cosmetics',
+            'equipment' => 'Equipment',
+        ],
+        'allLabels' => [
+            'medicine' => 'All Medicines',
+            'cosmetic' => 'All Cosmetics',
+            'equipment' => 'All Equipment',
+        ],
+        'listLabels' => [
+            'medicine' => 'Medicine list',
+            'cosmetic' => 'Cosmetic category',
+            'equipment' => 'Equipment category',
+        ],
+        'categories' => $groups,
+        'products' => $products,
+        'selected' => [
+            'type' => $filters['type'] ?? '',
+            'category' => (int)($filters['category'] ?? 0),
+            'product' => (int)($filters['product'] ?? 0),
+        ],
+    ];
+}
+
+function renderReportTypeCategoryFields(array $filters, array $options): void {
+    $type = $filters['type'] ?? '';
+    $catFilter = (int)($filters['category'] ?? 0);
+    $groups = reportTypeCategoryGroups($options['categories'] ?? []);
+    $typeCats = $type !== '' ? ($groups[$type] ?? []) : [];
+    $listLabels = [
+        'medicine' => 'Medicine list',
+        'cosmetic' => 'Cosmetic category',
+        'equipment' => 'Equipment category',
+    ];
+    $allLabels = [
+        'medicine' => 'All Medicines',
+        'cosmetic' => 'All Cosmetics',
+        'equipment' => 'All Equipment',
+    ];
+    $catLabel = $listLabels[$type] ?? 'Category';
+    $allLabel = $allLabels[$type] ?? 'All Categories';
+    static $dataEmitted = false;
+    ?>
+      <div class="form-group">
+        <label>Product Type</label>
+        <select name="type" id="reportType">
+          <option value="">All Types</option>
+          <option value="medicine" <?= $type === 'medicine' ? 'selected' : '' ?>>Medicine</option>
+          <option value="cosmetic" <?= $type === 'cosmetic' ? 'selected' : '' ?>>Cosmetics</option>
+          <option value="equipment" <?= $type === 'equipment' ? 'selected' : '' ?>>Equipment</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label id="reportCatLabel"><?= htmlspecialchars($catLabel) ?></label>
+        <select name="category" id="reportCategory" <?= $type === '' ? 'disabled' : '' ?>>
+          <?php if ($type === ''): ?>
+          <option value="">Choose Medicine, Cosmetics or Equipment first</option>
+          <?php else: ?>
+          <option value=""><?= htmlspecialchars($allLabel) ?></option>
+          <?php foreach ($typeCats as $c): ?>
+          <option value="<?= (int)$c['id'] ?>" <?= $catFilter === (int)$c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
+          <?php endforeach; ?>
+          <?php endif; ?>
+        </select>
+      </div>
+    <?php
+    if (!$dataEmitted) {
+        $dataEmitted = true;
+        echo '<script>window.REPORT_FILTER_DATA = ' . json_encode(reportTypeCategoryFilterData($filters, $options), JSON_UNESCAPED_UNICODE) . ';</script>';
+    }
+}
+
 function renderReportFilters(array $dates, array $filters, array $options, string $formAction = '', ?array $presets = null, bool $showProduct = true, bool $showSupplier = true, string $exportReport = 'overview'): void {
     $presets = $presets ?? reportDatePresets();
     $payments = reportPaymentMethods();
     $isCustom = $dates['preset'] === 'custom';
     $chips = reportActiveFilterChips($dates, $filters, $options);
-    $hasExtra = $filters['product'] || $filters['category'] || $filters['supplier']
+    $hasExtra = ($filters['type'] ?? '') !== '' || $filters['product'] || $filters['category'] || $filters['supplier']
         || $filters['customer'] !== '' || $filters['cashier'] || $filters['payment_method'] !== ''
         || $filters['sales_type'] !== '';
     ?>
@@ -93,40 +196,19 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
       <?php if ($showProduct): ?>
       <div class="form-group">
         <label>Product</label>
-        <select name="product">
+        <select name="product" id="reportProduct">
           <option value="">All Products</option>
-          <?php foreach ($options['products'] as $p): ?>
+          <?php foreach ($options['products'] as $p):
+            $pType = $p['product_type'] ?? 'medicine';
+            if (($filters['type'] ?? '') !== '' && $pType !== $filters['type']) continue;
+            if (!empty($filters['category']) && (int)($p['category_id'] ?? 0) !== (int)$filters['category']) continue;
+          ?>
           <option value="<?= $p['id'] ?>" <?= $filters['product'] == $p['id'] ? 'selected' : '' ?>><?= htmlspecialchars($p['name']) ?></option>
           <?php endforeach; ?>
         </select>
       </div>
       <?php endif; ?>
-      <div class="form-group">
-        <label>Category</label>
-        <select name="category">
-          <option value="">All Categories</option>
-          <?php
-          // Group categories by product type so Medicine / Cosmetics / Equipment stay separate.
-          $catGroups = [];
-          foreach ($options['categories'] as $c) {
-              $pt = $c['product_type'] ?? 'medicine';
-              $catGroups[$pt][] = $c;
-          }
-          $catLabels = ['medicine' => 'Medicine', 'cosmetic' => 'Cosmetics', 'equipment' => 'Equipment'];
-          foreach (array_keys($catGroups) as $pt) {
-              if (!isset($catLabels[$pt])) $catLabels[$pt] = ucfirst($pt);
-          }
-          foreach ($catLabels as $pt => $ptLabel):
-              if (empty($catGroups[$pt])) continue;
-          ?>
-          <optgroup label="<?= htmlspecialchars($ptLabel) ?>">
-            <?php foreach ($catGroups[$pt] as $c): ?>
-            <option value="<?= $c['id'] ?>" <?= $filters['category'] == $c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
-            <?php endforeach; ?>
-          </optgroup>
-          <?php endforeach; ?>
-        </select>
-      </div>
+      <?php renderReportTypeCategoryFields($filters, $options); ?>
       <?php if ($showSupplier): ?>
       <div class="form-group">
         <label>Supplier</label>

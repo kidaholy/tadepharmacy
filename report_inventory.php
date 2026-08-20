@@ -53,7 +53,18 @@ if ($expiryTab === 'expiring') {
 $qs      = reportInventoryQueryString($dates, $f);
 $stockQS = fn(string $k) => reportInventoryQueryString($dates, array_merge($f, ['stock' => $k]));
 $expQS   = fn(string $k) => reportInventoryQueryString($dates, array_merge($f, ['expiry' => $k]));
-$catQS   = fn(string $k) => reportInventoryQueryString($dates, array_merge($f, ['category' => $k, 'stock' => 'all', 'expiry' => 'all']));
+$catQS   = fn($id, $type = '') => reportInventoryQueryString($dates, array_merge($f, [
+    'category' => $id,
+    'type' => $type !== '' ? $type : ($f['type'] ?? ''),
+    'stock' => 'all',
+    'expiry' => 'all',
+]));
+$typeQS  = fn(string $type) => reportInventoryQueryString($dates, array_merge($f, [
+    'type' => $type,
+    'category' => 0,
+    'stock' => 'all',
+    'expiry' => 'all',
+]));
 
 $cur = ' ' . getSetting('currency', 'ETB');
 // Category dropdown data, grouped by product type like the Sales Report filter.
@@ -105,20 +116,7 @@ renderSidebar();
           <?php endforeach; ?>
         </datalist>
       </div>
-      <div class="form-group">
-        <label>Category</label>
-        <select name="category">
-          <option value="">All Categories</option>
-          <?php foreach ($catLabels as $pt => $ptLabel): ?>
-            <?php if (empty($catGroups[$pt])) continue; ?>
-          <optgroup label="<?= htmlspecialchars($ptLabel) ?>">
-            <?php foreach ($catGroups[$pt] as $c): ?>
-            <option value="<?= $c['id'] ?>" <?= $f['category'] == $c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
-            <?php endforeach; ?>
-          </optgroup>
-          <?php endforeach; ?>
-        </select>
-      </div>
+      <?php renderReportTypeCategoryFields($f, $options); ?>
       <div class="form-group">
         <label>Supplier</label>
         <select name="supplier">
@@ -165,6 +163,7 @@ renderSidebar();
   </form>
   <?php
   $chips = ['Period: ' . $dates['label']];
+  if (($f['type'] ?? '') !== '') $chips[] = 'Type: ' . (productTypeMeta()[$f['type']]['title'] ?? $f['type']);
   if ($f['product']) { foreach ($options['products'] as $p) { if ((int)$p['id'] === (int)$f['product']) { $chips[] = 'Product: ' . $p['name']; break; } } }
   if ($f['category']) $chips[] = 'Category: ' . ($catNameById[(int)$f['category']] ?? '#' . (int)$f['category']);
   if ($f['supplier']) { foreach ($options['suppliers'] as $s) { if ((int)$s['id'] === (int)$f['supplier']) { $chips[] = 'Supplier: ' . $s['name']; break; } } }
@@ -230,7 +229,10 @@ renderSidebar();
     <?php else: ?>
     <?php foreach ($overview['groups'] as $grp): ?>
       <tr style="background:var(--bg-500);">
-        <td colspan="6" style="font-weight:700;letter-spacing:0.3px;"><?= htmlspecialchars($grp['label']) ?></td>
+        <td colspan="6" style="font-weight:700;letter-spacing:0.3px;">
+          <a href="?<?= htmlspecialchars($typeQS($grp['type'])) ?>"><?= htmlspecialchars($grp['label']) ?></a>
+          <?php if (($f['type'] ?? '') === $grp['type'] && empty($f['category'])): ?><span class="badge badge-blue" style="margin-left:8px;">filtered</span><?php endif; ?>
+        </td>
       </tr>
       <?php
       $gTot = ['products' => 0, 'units' => 0, 'cost' => 0, 'retail' => 0];
@@ -239,7 +241,7 @@ renderSidebar();
       ?>
       <tr style="<?= $f['category'] === $d['id'] ? 'background:var(--bg-600);' : '' ?>">
         <td style="padding-left:28px;">
-          <a href="?<?= htmlspecialchars($catQS($d['id'])) ?>" style="font-weight:600;"><?= htmlspecialchars($d['category']) ?></a>
+          <a href="?<?= htmlspecialchars($catQS($d['id'], $d['type'] ?? $grp['type'])) ?>" style="font-weight:600;"><?= htmlspecialchars($d['category']) ?></a>
           <?php if ($f['category'] === $d['id']): ?><span class="badge badge-blue" style="margin-left:8px;">filtered</span><?php endif; ?>
         </td>
         <td style="text-align:center;"><?= number_format($d['products']) ?></td>

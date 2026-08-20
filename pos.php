@@ -10,6 +10,10 @@ $success = '';
 $preselectCustomer = (int)($_GET['customer_id'] ?? 0);
 
 $catalog    = fetchPosCatalog($pdo);
+$posCategories = categoriesByProductType($pdo);
+foreach ($posCategories as $type => $list) {
+    $posCategories[$type] = categoryDetailsForType($list, $type);
+}
 $customers  = searchCustomers($pdo, '', 500);
 $payMethods = posPaymentMethods();
 $payButtons = posPaymentButtonLabels();
@@ -172,10 +176,19 @@ renderSidebar();
 
 <div class="pos-layout">
   <div class="pos-left">
+    <div class="pos-filters">
+      <div class="pos-type-pills" id="posTypePills" role="tablist" aria-label="Product type">
+        <button type="button" class="pill active" data-type="" onclick="setPosType('')"><i data-lucide="layout-grid"></i> All</button>
+        <button type="button" class="pill" data-type="medicine" onclick="setPosType('medicine')"><i data-lucide="pill"></i> Medicine</button>
+        <button type="button" class="pill" data-type="cosmetic" onclick="setPosType('cosmetic')"><i data-lucide="sparkles"></i> Cosmetics</button>
+        <button type="button" class="pill" data-type="equipment" onclick="setPosType('equipment')"><i data-lucide="stethoscope"></i> Equipment</button>
+      </div>
+      <div class="cat-chips pos-cat-chips" id="posCatChips" hidden></div>
+    </div>
     <div class="pos-search">
       <div class="pos-search-icon"><i data-lucide="search"></i></div>
       <input type="text" id="posSearch" placeholder="Search brand, generic, strength, batch or barcode…" oninput="renderGrid(this.value)">
-      <div class="pos-search-hint" id="posSearchHint">Searching all batches · earliest expiry shown first</div>
+      <div class="pos-search-hint" id="posSearchHint">Pick Medicine, Cosmetics, or Equipment — then a detail like Skincare if you need it.</div>
     </div>
     <div class="pos-items-grid" id="medGrid">
       <?php if (empty($catalog)): ?>
@@ -344,6 +357,11 @@ const CUR = <?= json_encode($currency) ?>;
 const TAX_DEFAULT = <?= json_encode($taxDefault) ?>;
 const CREDIT_MSG = 'Credit sales require a registered customer. Select or register a customer before completing the sale.';
 const CATALOG = <?= json_encode($catalog, JSON_UNESCAPED_UNICODE) ?>;
+const POS_CATEGORIES = <?= json_encode($posCategories, JSON_UNESCAPED_UNICODE) ?>;
+const POS_TYPE_LABELS = { medicine: 'Medicine', cosmetic: 'Cosmetics', equipment: 'Equipment' };
+
+let posType = '';
+let posCat = 0;
 
 let cart = {};
 let currentTotal = 0;
@@ -360,6 +378,9 @@ const medGroups = (() => {
         strength: b.strength || '',
         dosage_form: b.dosage_form || '',
         unit: b.unit || '',
+        product_type: b.product_type || 'medicine',
+        category_id: Number(b.category_id) || 0,
+        category_name: b.category_name || '',
         batches: [],
       });
     }
@@ -383,23 +404,71 @@ function expSoon(d) {
 function medMatches(b, term) {
   const hay = [
     b.name, b.generic_name, b.strength, b.dosage_form,
-    b.batch_number, b.barcode, b.sku, b.unit, b.product_type,
+    b.batch_number, b.barcode, b.sku, b.unit, b.product_type, b.category_name,
   ].filter(v => v != null).join(' ').toLowerCase();
   return term.split(/\s+/).every(w => hay.includes(w));
+}
+
+function setPosType(type) {
+  posType = type || '';
+  posCat = 0;
+  document.querySelectorAll('#posTypePills .pill').forEach(btn => {
+    btn.classList.toggle('active', (btn.dataset.type || '') === posType);
+  });
+  renderPosCatChips();
+  renderGrid(document.getElementById('posSearch').value);
+}
+
+function setPosCat(id) {
+  posCat = Number(id) || 0;
+  renderPosCatChips();
+  renderGrid(document.getElementById('posSearch').value);
+}
+
+function renderPosCatChips() {
+  const wrap = document.getElementById('posCatChips');
+  const cats = POS_CATEGORIES[posType] || [];
+  if (!posType || !cats.length) {
+    wrap.hidden = true;
+    wrap.innerHTML = '';
+    return;
+  }
+  const allLabel = posType === 'cosmetic' ? 'All Cosmetics' : (posType === 'equipment' ? 'All Equipment' : 'All Medicines');
+  let html = `<button type="button" class="cat-chip${posCat ? '' : ' active'}" onclick="setPosCat(0)">${esc(allLabel)}</button>`;
+  cats.forEach(c => {
+    const id = Number(c.id);
+    html += `<button type="button" class="cat-chip${posCat === id ? ' active' : ''}" onclick="setPosCat(${id})">${esc(c.name)}</button>`;
+  });
+  wrap.innerHTML = html;
+  wrap.hidden = false;
 }
 
 function renderGrid(q) {
   const grid = document.getElementById('medGrid');
   const term = (q || '').trim().toLowerCase();
+  const hint = document.getElementById('posSearchHint');
+  const typeLabel = POS_TYPE_LABELS[posType] || '';
+  if (hint) {
+    if (posType && posCat) {
+      const cat = (POS_CATEGORIES[posType] || []).find(c => Number(c.id) === posCat);
+      hint.textContent = `Showing ${typeLabel}${cat ? ' · ' + cat.name : ''} · earliest expiry first`;
+    } else if (posType) {
+      hint.textContent = `Showing ${typeLabel} — pick a detail like Skincare to narrow the list.`;
+    } else {
+      hint.textContent = 'Pick Medicine, Cosmetics, or Equipment — then a detail like Skincare if you need it.';
+    }
+  }
   let html = '';
   let any = false;
 
   for (const g of medGroups) {
+    if (posType && g.product_type !== posType) continue;
+    if (posCat && g.category_id !== posCat) continue;
     const batches = g.batches.filter(b => !term || medMatches(b, term));
     if (!batches.length) continue;
     any = true;
     const stock = batches.reduce((s, b) => s + b.stock, 0);
-    const sub = [g.generic_name, g.strength, g.dosage_form].filter(Boolean).join(' · ');
+    const sub = [g.generic_name, g.strength, g.dosage_form, g.category_name].filter(Boolean).join(' · ');
     html += `<div class="pos-med-group">
       <div class="pos-med-header">
         <div class="pos-med-head-main">
@@ -422,8 +491,9 @@ function renderGrid(q) {
     html += '</div>';
   }
 
+  const emptyLabel = posType ? (POS_TYPE_LABELS[posType] || 'products').toLowerCase() : 'products';
   grid.innerHTML = any ? html : `<div style="grid-column:1/-1;text-align:center;padding:60px;color:var(--text-300);">
-    <p>No medicines match "${esc(q)}".</p></div>`;
+    <p>No ${esc(emptyLabel)} match${term ? ' "' + esc(q) + '"' : ''}.</p></div>`;
   if (window.lucide) lucide.createIcons();
 }
 

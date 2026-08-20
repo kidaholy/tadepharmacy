@@ -32,9 +32,6 @@ if ($requiredPerm !== null) {
 $pharmacyName = getSetting('pharmacy_name', 'TADE PHARMACY');
 $user = currentUser();
 
-require_once __DIR__ . '/notifications_lib.php';
-runScheduledNotifications(getDB());
-
 $navItems = [];
 $navDefs = [
     ['page' => 'index',         'icon' => 'grid-2x2',         'label' => 'Dashboard',     'perm' => 'dashboard.view'],

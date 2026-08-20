@@ -124,7 +124,7 @@ $suppliers = $pdo->query("SELECT * FROM suppliers WHERE COALESCE(status,'active'
 $medicines = $pdo->query("
     SELECT m.id, m.name, m.generic_name, m.unit, m.sku, m.barcode,
            COALESCE(m.product_type,'medicine') AS product_type,
-           c.name AS category_name
+           m.category_id, c.name AS category_name
     FROM medicines m
     LEFT JOIN categories c ON c.id = m.category_id
     ORDER BY m.name COLLATE NOCASE
@@ -264,6 +264,7 @@ renderSidebar();
             <button type="button" class="pill" data-type="cosmetic" onclick="setRowType(this)"><i data-lucide="sparkles"></i> Cosmetics</button>
             <button type="button" class="pill" data-type="equipment" onclick="setRowType(this)"><i data-lucide="stethoscope"></i> Equipment</button>
           </div>
+          <div class="cat-chips purchase-cat-chips" data-role="cat-chips"></div>
 
           <div class="purchase-item-section">
             <div class="purchase-section-label">1. Product</div>
@@ -540,6 +541,7 @@ const productCatalog = <?= json_encode(array_map(static function ($m) {
         'sku' => $m['sku'] ?? '',
         'barcode' => $m['barcode'] ?? '',
         'category' => $m['category_name'] ?? '',
+        'category_id' => (int)($m['category_id'] ?? 0),
         'type' => $type,
         'requiresExpiry' => productRequiresExpiry($type) ? 1 : 0,
     ];
@@ -630,6 +632,37 @@ function syncTypePills(row) {
   row.querySelectorAll('.purchase-type-pills .pill').forEach(b => {
     b.classList.toggle('active', b.dataset.type === t);
   });
+  renderPurchaseCatChips(row);
+}
+
+function categoryDetails(type) {
+  const skip = {
+    medicine: ['medicine', 'medicines', 'other'],
+    cosmetic: ['cosmetic', 'cosmetics'],
+    equipment: ['equipment', 'equipments', 'device', 'devices'],
+  }[type] || [];
+  const list = categoriesByType[type] || [];
+  const details = list.filter(c => !skip.includes(String(c.name || '').toLowerCase()));
+  return details.length ? details : list;
+}
+
+function renderPurchaseCatChips(row) {
+  const wrap = row.querySelector('[data-role="cat-chips"]');
+  if (!wrap) return;
+  const t = rowType(row);
+  const cats = categoryDetails(t);
+  const selected = parseInt(row.dataset.cat || '0', 10) || 0;
+  const allLabel = t === 'cosmetic' ? 'All Cosmetics' : (t === 'equipment' ? 'All Equipment' : 'All Medicines');
+  wrap.innerHTML = `<button type="button" class="cat-chip${selected ? '' : ' active'}" data-cat="0">${escapeHtml(allLabel)}</button>`
+    + cats.map(c => `<button type="button" class="cat-chip${selected === c.id ? ' active' : ''}" data-cat="${c.id}">${escapeHtml(c.name)}</button>`).join('');
+  wrap.querySelectorAll('.cat-chip').forEach(btn => {
+    btn.addEventListener('click', () => {
+      row.dataset.cat = btn.dataset.cat || '0';
+      renderPurchaseCatChips(row);
+      const search = row.querySelector('.product-search');
+      if (search) filterProductPicker(search);
+    });
+  });
 }
 
 function setRowType(btn) {
@@ -637,6 +670,7 @@ function setRowType(btn) {
   const t = btn.dataset.type;
   if (rowType(row) === t) return;
   row.dataset.type = t;
+  row.dataset.cat = '0';
   row.querySelector('.product-id').value = '';
   row.querySelector('.product-code').value = '';
   fillMedInfo(row, null);
@@ -693,6 +727,8 @@ function filterProductPicker(input) {
   }
   let matches = productCatalog.filter(p => {
     if (p.type !== t) return false;
+    const cat = parseInt(row.dataset.cat || '0', 10) || 0;
+    if (cat && Number(p.category_id) !== cat) return false;
     if (!q) return true;
     return (p.name || '').toLowerCase().includes(q)
       || (p.generic || '').toLowerCase().includes(q)
@@ -934,11 +970,13 @@ function resetRowFields(row, opts = {}) {
   const total = row.querySelector('.line-total');
   if (total) total.textContent = '0.00';
   if (!opts.keepMedicine) {
+    row.dataset.cat = '0';
     fillMedInfo(row, null);
     syncLabels(row);
     syncTypeFields(row);
     updateCardTitle(row);
   }
+  syncTypePills(row);
 }
 
 function buildCardSummary(row) {

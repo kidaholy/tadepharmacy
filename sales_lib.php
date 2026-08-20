@@ -30,6 +30,93 @@ function productTypes(): array {
     ];
 }
 
+function productTypeMeta(): array {
+    return [
+        'medicine'  => ['title' => 'Medicine',  'plural' => 'Medicines',  'all' => 'All Medicines',  'icon' => 'pill'],
+        'cosmetic'  => ['title' => 'Cosmetics', 'plural' => 'Cosmetics',  'all' => 'All Cosmetics',  'icon' => 'sparkles'],
+        'equipment' => ['title' => 'Equipment', 'plural' => 'Equipment',  'all' => 'All Equipment',  'icon' => 'stethoscope'],
+    ];
+}
+
+function categoriesByProductType(PDO $pdo): array {
+    $out = ['medicine' => [], 'cosmetic' => [], 'equipment' => []];
+    $rows = $pdo->query("SELECT id, name, COALESCE(product_type,'medicine') AS product_type FROM categories ORDER BY name COLLATE NOCASE")->fetchAll();
+    foreach ($rows as $c) {
+        $t = $c['product_type'] ?: 'medicine';
+        if (isset($out[$t])) {
+            $out[$t][] = $c;
+        }
+    }
+    return $out;
+}
+
+/** Hide the generic "Cosmetics" / "Equipment" rows so chips show details like Skincare. */
+function categoryDetailsForType(array $categories, string $type): array {
+    $generic = [
+        'medicine'  => ['medicine', 'medicines', 'other'],
+        'cosmetic'  => ['cosmetic', 'cosmetics'],
+        'equipment' => ['equipment', 'equipments', 'device', 'devices'],
+    ];
+    $skip = $generic[$type] ?? [];
+    $details = [];
+    foreach ($categories as $c) {
+        $n = strtolower(trim((string)($c['name'] ?? '')));
+        if (in_array($n, $skip, true)) {
+            continue;
+        }
+        $details[] = $c;
+    }
+    return $details ?: $categories;
+}
+
+function renderTypeTabs(string $base, string $activeType, array $counts = [], array $extra = [], bool $includeAll = false): void {
+    echo '<div class="admin-tabs catalogue-tabs' . ($includeAll ? ' catalogue-tabs-4' : '') . '">';
+    if ($includeAll) {
+        $qs = http_build_query(array_filter($extra));
+        $href = $qs ? ($base . '?' . $qs) : $base;
+        $cls = $activeType === '' ? ' active' : '';
+        echo '<a href="' . htmlspecialchars($href) . '" class="admin-tab' . $cls . '">';
+        echo '<i data-lucide="layout-grid"></i><span>All</span>';
+        if (isset($counts['all'])) {
+            $badge = $activeType === '' ? 'badge-blue' : 'badge-gray';
+            echo '<span class="badge ' . $badge . '">' . number_format((int)$counts['all']) . '</span>';
+        }
+        echo '</a>';
+    }
+    foreach (productTypeMeta() as $key => $meta) {
+        $qs = http_build_query(array_filter(array_merge($extra, ['type' => $key])));
+        $cls = $activeType === $key ? ' active' : '';
+        echo '<a href="' . htmlspecialchars($base . '?' . $qs) . '" class="admin-tab' . $cls . '">';
+        echo '<i data-lucide="' . htmlspecialchars($meta['icon']) . '"></i>';
+        echo '<span>' . htmlspecialchars($meta['title']) . '</span>';
+        if (isset($counts[$key])) {
+            $badge = $activeType === $key ? 'badge-blue' : 'badge-gray';
+            echo '<span class="badge ' . $badge . '">' . number_format((int)$counts[$key]) . '</span>';
+        }
+        echo '</a>';
+    }
+    echo '</div>';
+}
+
+function renderCategoryChips(string $base, string $type, int $catFilter, array $categories, array $extra = []): void {
+    $meta = productTypeMeta()[$type] ?? productTypeMeta()['medicine'];
+    $details = categoryDetailsForType($categories, $type);
+    if (!$details) {
+        return;
+    }
+    echo '<div class="cat-chips" role="navigation" aria-label="Filter by ' . htmlspecialchars($meta['title']) . ' category">';
+    $allQs = http_build_query(array_filter(array_merge($extra, ['type' => $type])));
+    echo '<a class="cat-chip' . ($catFilter ? '' : ' active') . '" href="' . htmlspecialchars($base . '?' . $allQs) . '">';
+    echo htmlspecialchars($meta['all']);
+    echo '</a>';
+    foreach ($details as $c) {
+        $qs = http_build_query(array_filter(array_merge($extra, ['type' => $type, 'cat' => (int)$c['id']])));
+        $active = $catFilter === (int)$c['id'] ? ' active' : '';
+        echo '<a class="cat-chip' . $active . '" href="' . htmlspecialchars($base . '?' . $qs) . '">' . htmlspecialchars($c['name']) . '</a>';
+    }
+    echo '</div>';
+}
+
 function productTypeFromCategory(?string $categoryName, string $fallback = 'medicine'): string {
     $name = strtolower(trim((string) $categoryName));
     if (str_contains($name, 'cosmetic')) {
@@ -201,9 +288,11 @@ function fetchPosCatalog(PDO $pdo): array {
     return $pdo->query("
         SELECT m.id AS medicine_id, m.name, m.generic_name, m.strength, m.dosage_form,
                m.unit, m.barcode, m.sku, COALESCE(m.product_type,'medicine') AS product_type,
+               m.category_id, c.name AS category_name,
                b.id AS batch_id, b.batch_number, b.selling_price, b.quantity AS stock, b.expiry_date
         FROM medicines m
         JOIN batches b ON b.medicine_id = m.id
+        LEFT JOIN categories c ON c.id = m.category_id
         WHERE b.quantity > 0 AND b.expiry_date >= date('now')
         ORDER BY m.name COLLATE NOCASE, b.expiry_date ASC, b.id ASC
     ")->fetchAll();

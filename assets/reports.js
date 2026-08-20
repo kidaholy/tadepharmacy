@@ -230,8 +230,101 @@ function switchSalesTrend(view, btn) {
 
 window.addEventListener('load', () => {
   toggleCustomDates();
+  initReportTypeCategoryFilter();
   initReportCharts();
   initProductTrendChart();
   initSalesTrendChart();
   if (typeof refreshIcons === 'function') refreshIcons();
 });
+
+function reportFilterData() {
+  return window.REPORT_FILTER_DATA || null;
+}
+
+function initReportTypeCategoryFilter() {
+  const data = reportFilterData();
+  const typeSel = document.getElementById('reportType');
+  const catSel = document.getElementById('reportCategory');
+  if (!data || !typeSel || !catSel) return;
+
+  typeSel.addEventListener('change', () => {
+    const productSel = document.getElementById('reportProduct');
+    if (productSel) productSel.value = '';
+    const hiddenProduct = document.getElementById('invProductId');
+    const productQ = document.getElementById('invProductQ');
+    if (hiddenProduct) hiddenProduct.value = '';
+    if (productQ) productQ.value = '';
+    rebuildReportCategoryOptions('');
+    rebuildReportProductOptions();
+    if (typeSel.form) typeSel.form.submit();
+  });
+  catSel.addEventListener('change', () => {
+    const productSel = document.getElementById('reportProduct');
+    if (productSel) productSel.value = '';
+    rebuildReportProductOptions();
+    if (catSel.form) {
+      catSel.disabled = false;
+      catSel.form.submit();
+    }
+  });
+}
+
+function rebuildReportCategoryOptions(keepCat) {
+  const data = reportFilterData();
+  const typeSel = document.getElementById('reportType');
+  const catSel = document.getElementById('reportCategory');
+  const label = document.getElementById('reportCatLabel');
+  if (!data || !typeSel || !catSel) return;
+  const type = typeSel.value;
+  const selected = keepCat !== undefined ? String(keepCat) : String(catSel.value || '');
+  catSel.innerHTML = '';
+  if (!type) {
+    catSel.disabled = true;
+    if (label) label.textContent = 'Category';
+    catSel.appendChild(new Option('Choose Medicine, Cosmetics or Equipment first', ''));
+    return;
+  }
+  catSel.disabled = false;
+  if (label) label.textContent = data.listLabels[type] || 'Category';
+  catSel.appendChild(new Option(data.allLabels[type] || 'All', ''));
+  (data.categories[type] || []).forEach(c => {
+    const opt = new Option(c.name, String(c.id));
+    if (String(c.id) === selected) opt.selected = true;
+    catSel.appendChild(opt);
+  });
+}
+
+function rebuildReportProductOptions() {
+  const data = reportFilterData();
+  if (!data) return;
+  const type = (document.getElementById('reportType') || {}).value || '';
+  const cat = parseInt((document.getElementById('reportCategory') || {}).value || '0', 10) || 0;
+  const selected = String((data.selected && data.selected.product) || '');
+  const match = p => {
+    if (type && p.type !== type) return false;
+    if (cat && Number(p.category_id) !== cat) return false;
+    return true;
+  };
+
+  const productSel = document.getElementById('reportProduct');
+  if (productSel) {
+    const current = productSel.value;
+    productSel.innerHTML = '';
+    productSel.appendChild(new Option('All Products', ''));
+    data.products.filter(match).forEach(p => {
+      const opt = new Option(p.name, String(p.id));
+      if (String(p.id) === current || String(p.id) === selected) opt.selected = true;
+      productSel.appendChild(opt);
+    });
+  }
+
+  const list = document.getElementById('invProductList');
+  if (list) {
+    list.innerHTML = '';
+    data.products.filter(match).forEach(p => {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      list.appendChild(opt);
+    });
+  }
+}

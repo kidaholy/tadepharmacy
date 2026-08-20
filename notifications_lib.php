@@ -14,6 +14,15 @@ function sendNotification(string $message): array {
     return $results;
 }
 
+/** Once Telegram is unreachable, skip further sends in this request. */
+function telegramTransportFailed(?bool $set = null): bool {
+    static $failed = false;
+    if ($set !== null) {
+        $failed = $set;
+    }
+    return $failed;
+}
+
 function telegramRequest(string $method, string $url, array $postFields = []): array {
     $body = telegramHttp($method, $url, $postFields);
     if ($body === false) {
@@ -27,14 +36,21 @@ function telegramRequest(string $method, string $url, array $postFields = []): a
 }
 
 function telegramHttp(string $method, string $url, array $postFields = []): string|false {
+    if (telegramTransportFailed()) {
+        return false;
+    }
+
     $payload = $postFields ? json_encode($postFields, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) : null;
     $isPost = strtoupper($method) === 'POST';
+    $timeout = 4;
 
     if (function_exists('curl_init')) {
         $ch = curl_init($url);
         curl_setopt_array($ch, [
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 12,
+            CURLOPT_CONNECTTIMEOUT => 2,
+            CURLOPT_TIMEOUT        => $timeout,
+            CURLOPT_NOSIGNAL       => true,
             CURLOPT_FOLLOWLOCATION => true,
         ]);
         if ($isPost) {
@@ -43,16 +59,19 @@ function telegramHttp(string $method, string $url, array $postFields = []): stri
             curl_setopt($ch, CURLOPT_POSTFIELDS, $payload);
         }
         $body = curl_exec($ch);
+        $ok = $body !== false && curl_errno($ch) === 0;
         curl_close($ch);
-        if ($body !== false) {
+        if ($ok) {
             return $body;
         }
+        telegramTransportFailed(true);
+        return false;
     }
 
     $curlBin = telegramCurlBinary();
     if ($curlBin) {
         $tmp = null;
-        $cmd = [escapeshellarg($curlBin), '-sS', '--max-time', '12'];
+        $cmd = [escapeshellarg($curlBin), '-sS', '--connect-timeout', '2', '--max-time', (string)$timeout];
         if ($isPost && $payload !== null) {
             $tmp = tempnam(sys_get_temp_dir(), 'tg');
             file_put_contents($tmp, $payload);
@@ -71,12 +90,14 @@ function telegramHttp(string $method, string $url, array $postFields = []): stri
         if ($code === 0) {
             return implode("\n", $out);
         }
+        telegramTransportFailed(true);
+        return false;
     }
 
     $opts = [
         'http' => [
             'method'        => strtoupper($method),
-            'timeout'       => 12,
+            'timeout'       => $timeout,
             'ignore_errors' => true,
             'header'        => $isPost ? "Content-Type: application/json\r\n" : '',
         ],
@@ -89,7 +110,11 @@ function telegramHttp(string $method, string $url, array $postFields = []): stri
         $opts['http']['content'] = $payload;
     }
     $body = @file_get_contents($url, false, stream_context_create($opts));
-    return $body === false ? false : $body;
+    if ($body === false) {
+        telegramTransportFailed(true);
+        return false;
+    }
+    return $body;
 }
 
 function telegramCurlBinary(): ?string {
@@ -112,6 +137,9 @@ function telegramCurlBinary(): ?string {
 }
 
 function sendTelegram(string $message): array {
+    if (telegramTransportFailed()) {
+        return ['ok' => false, 'error' => 'Telegram is unreachable. Alerts will retry later.'];
+    }
     $token  = trim(getSetting('telegram_bot_token', ''));
     $chatId = preg_replace('/\s+/', '', trim(getSetting('telegram_chat_id', '')));
     if ($token === '' || $chatId === '') {
@@ -185,13 +213,15 @@ function notifyNewCreditSale(array $sale, array $customer): void {
 }
 
 function notifyCreditDueTomorrow(array $sales): void {
-    foreach ($sales as $s) {
-        $msg = "<b>Credit Due Tomorrow</b>\n"
-             . "Customer: {$s['customer_name']}\n"
-             . "Invoice: {$s['invoice_number']}\n"
-             . "Balance: " . number_format((float)$s['remaining_balance'], 2) . " ETB";
-        sendNotification($msg);
+    if (!$sales) {
+        return;
     }
+    $msg = "<b>Credit due tomorrow</b>\n";
+    foreach ($sales as $s) {
+        $msg .= ($s['customer_name'] ?? '') . ' · ' . ($s['invoice_number'] ?? '')
+              . ' · ' . number_format((float)$s['remaining_balance'], 2) . " ETB\n";
+    }
+    sendNotification(trim($msg));
 }
 
 function notifyCreditOverdue(array $sale): void {
@@ -215,6 +245,18 @@ function notifySupplierDue(array $p, string $when): void {
     sendNotification($msg);
 }
 
+function notifySupplierDueList(array $purchases, string $when): void {
+    if (!$purchases) {
+        return;
+    }
+    $msg = "<b>Supplier payment {$when}</b>\n";
+    foreach ($purchases as $p) {
+        $msg .= ($p['supplier_name'] ?? '') . ' · ' . ($p['purchase_number'] ?? '')
+              . ' · ' . number_format(purchaseOutstanding($p), 2) . " ETB\n";
+    }
+    sendNotification(trim($msg));
+}
+
 function runDailyPayableAlerts(PDO $pdo): void {
     require_once __DIR__ . '/purchases_lib.php';
     $sql = "
@@ -225,13 +267,10 @@ function runDailyPayableAlerts(PDO $pdo): void {
     ";
     $tomorrow = $pdo->prepare($sql . " AND p.due_date = ?");
     $tomorrow->execute([date('Y-m-d', strtotime('+1 day'))]);
-    foreach ($tomorrow as $p) notifySupplierDue($p, 'due tomorrow');
+    notifySupplierDueList($tomorrow->fetchAll(), 'due tomorrow');
 
-    $today = $pdo->query($sql . " AND p.due_date = date('now')")->fetchAll();
-    foreach ($today as $p) notifySupplierDue($p, 'due today');
-
-    $overdue = $pdo->query($sql . " AND p.due_date < date('now') LIMIT 20")->fetchAll();
-    foreach ($overdue as $p) notifySupplierDue($p, 'overdue');
+    notifySupplierDueList($pdo->query($sql . " AND p.due_date = date('now')")->fetchAll(), 'due today');
+    notifySupplierDueList($pdo->query($sql . " AND p.due_date < date('now') LIMIT 20")->fetchAll(), 'overdue');
 }
 
 function notifyLowStock(string $medicineName, int $stock): void {
@@ -259,7 +298,14 @@ function runDailyCreditAlerts(PDO $pdo): void {
           AND COALESCE(due_date, credit_due_date) < date('now')
         LIMIT 20
     ")->fetchAll();
-    foreach ($overdue as $s) notifyCreditOverdue($s);
+    if ($overdue) {
+        $msg = "<b>Credit overdue</b>\n";
+        foreach ($overdue as $s) {
+            $msg .= ($s['customer_name'] ?? '') . ' · ' . ($s['invoice_number'] ?? '')
+                  . ' · ' . number_format((float)$s['remaining_balance'], 2) . " ETB\n";
+        }
+        sendNotification(trim($msg));
+    }
 }
 
 function checkStockAlerts(PDO $pdo, int $medicineId): void {
@@ -388,11 +434,17 @@ function maybeSendDailyReports(PDO $pdo): void {
 }
 
 function runScheduledNotifications(PDO $pdo): void {
-    if (getSetting('last_credit_alert_date', '') !== date('Y-m-d')) {
-        runDailyCreditAlerts($pdo);
-        runDailyPayableAlerts($pdo);
-        $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_credit_alert_date', ?)")->execute([date('Y-m-d')]);
-        clearSettingsCache();
+    try {
+        if (getSetting('last_credit_alert_date', '') !== date('Y-m-d')) {
+            runDailyCreditAlerts($pdo);
+            runDailyPayableAlerts($pdo);
+            if (!telegramTransportFailed()) {
+                $pdo->prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('last_credit_alert_date', ?)")->execute([date('Y-m-d')]);
+                clearSettingsCache();
+            }
+        }
+        maybeSendDailyReports($pdo);
+    } catch (Throwable $e) {
+        // Never let Telegram take down a page.
     }
-    maybeSendDailyReports($pdo);
 }

@@ -260,12 +260,13 @@ if ($action === 'edit' && $edit) {
         $typeFilter = 'medicine';
     }
 }
-$typeMeta = [
-    'medicine'  => ['title' => 'Medicine', 'plural' => 'Medicines', 'add' => 'Add Medicine', 'icon' => 'pill'],
-    'cosmetic'  => ['title' => 'Cosmetics', 'plural' => 'Cosmetics', 'add' => 'Add Cosmetic', 'icon' => 'sparkles'],
-    'equipment' => ['title' => 'Equipment', 'plural' => 'Equipment', 'add' => 'Add Equipment', 'icon' => 'stethoscope'],
-];
+$typeMeta = productTypeMeta();
 $pageMeta = $typeMeta[$typeFilter];
+$pageMeta['add'] = match ($typeFilter) {
+    'cosmetic'  => 'Add Cosmetic',
+    'equipment' => 'Add Equipment',
+    default     => 'Add Medicine',
+};
 $typeCounts = ['medicine' => 0, 'cosmetic' => 0, 'equipment' => 0];
 foreach ($pdo->query("SELECT COALESCE(product_type,'medicine') AS t, COUNT(*) AS c FROM medicines GROUP BY t") as $row) {
     if (isset($typeCounts[$row['t']])) {
@@ -273,14 +274,6 @@ foreach ($pdo->query("SELECT COALESCE(product_type,'medicine') AS t, COUNT(*) AS
     }
 }
 $defaultCatId = 0;
-foreach ($categories as $c) {
-    if ($typeFilter === 'cosmetic' && strcasecmp($c['name'], 'Cosmetics') === 0) {
-        $defaultCatId = (int) $c['id'];
-    }
-    if ($typeFilter === 'equipment' && strcasecmp($c['name'], 'Equipment') === 0) {
-        $defaultCatId = (int) $c['id'];
-    }
-}
 // Only offer categories of the current product type, so medicine categories
 // (e.g. Antibiotic) are never mixed with cosmetics (e.g. Haircare) or equipment.
 $categoriesByType = ['medicine' => [], 'cosmetic' => [], 'equipment' => []];
@@ -340,21 +333,13 @@ renderSidebar();
 ?>
 <div id="sidebarOverlay" class="overlay-bg" onclick="toggleSidebar()"></div>
 <div class="main-content">
-<?php renderTopbar($pageMeta['plural'], 'Three catalogue pages: medicines, cosmetics, and equipment'); ?>
+<?php renderTopbar($pageMeta['plural'], 'Filter by Medicine, Cosmetics, or Equipment — then pick a detail like Skincare'); ?>
 <div class="page-body">
 
 <?php if ($msg):  ?><div class="alert alert-success auto-hide"><i data-lucide="check-circle"></i><?= htmlspecialchars($msg) ?></div><?php endif; ?>
 <?php if ($error): ?><div class="alert alert-danger"><i data-lucide="x-circle"></i><?= htmlspecialchars($error) ?></div><?php endif; ?>
 
-<div class="admin-tabs catalogue-tabs">
-  <?php foreach ($typeMeta as $key => $meta): ?>
-  <a href="medicines.php?type=<?= $key ?>" class="admin-tab<?= $typeFilter === $key ? ' active' : '' ?>">
-    <i data-lucide="<?= $meta['icon'] ?>"></i>
-    <span><?= htmlspecialchars($meta['title']) ?></span>
-    <span class="badge <?= $typeFilter === $key ? 'badge-blue' : 'badge-gray' ?>"><?= number_format($typeCounts[$key] ?? 0) ?></span>
-  </a>
-  <?php endforeach; ?>
-</div>
+<?php renderTypeTabs('medicines.php', $typeFilter, $typeCounts); ?>
 
 <?php if ($typeFilter === 'cosmetic'): ?>
 <p style="font-size:13px;color:var(--text-300);margin:-8px 0 16px;">Cosmetics can include an expiry date when you purchase or stock them, but it is optional. Medicines always require an expiry date.</p>
@@ -469,20 +454,16 @@ renderSidebar();
     </p>
   </div>
 
-  <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;">
+  <div style="display:flex;gap:12px;margin-bottom:16px;flex-wrap:wrap;flex-direction:column;">
+    <?php renderCategoryChips('medicines.php', $typeFilter, $catFilter, $typeCategories, array_filter(['q' => $search ?: null])); ?>
     <form method="GET" style="display:flex;gap:10px;flex:1;min-width:260px;">
       <input type="hidden" name="type" value="<?= htmlspecialchars($typeFilter) ?>">
+      <?php if ($catFilter): ?><input type="hidden" name="cat" value="<?= (int)$catFilter ?>"><?php endif; ?>
       <div class="search-bar" style="flex:1;">
         <i data-lucide="search"></i>
         <input type="text" name="q" value="<?= htmlspecialchars($search) ?>" placeholder="Search <?= strtolower($pageMeta['plural']) ?>...">
       </div>
-      <select name="cat" style="width:180px;">
-        <option value="">All Categories</option>
-        <?php foreach ($typeCategories as $c): ?>
-        <option value="<?= $c['id'] ?>" <?= $catFilter == $c['id'] ? 'selected' : '' ?>><?= htmlspecialchars($c['name']) ?></option>
-        <?php endforeach; ?>
-      </select>
-      <button type="submit" class="btn btn-ghost">Filter</button>
+      <button type="submit" class="btn btn-ghost">Search</button>
       <?php if ($search || $catFilter): ?><a href="medicines.php?type=<?= urlencode($typeFilter) ?>" class="btn btn-ghost">Clear</a><?php endif; ?>
     </form>
   </div>
