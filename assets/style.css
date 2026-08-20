@@ -2221,3 +2221,61 @@ code {
   width: 100%;
   font-size: 12px;
 }
+
+/* ─── MOBILE TABLE IMPROVEMENTS ──────────────────────────── */
+@media (max-width: 768px) {
+  /* Inventory list: hide less critical columns */
+  .table-wrap table thead th:nth-child(n+5),
+  .table-wrap table tbody td:nth-child(n+5) { display: none; }
+  .table-wrap table thead th:nth-child(3),
+  .table-wrap table tbody td:nth-child(3) { display: none; } /* batch count */
+
+  /* Batch view: hide buy price, sell price, warranty */
+  .table-wrap table thead th:nth-child(5),
+  .table-wrap table tbody td:nth-child(5) { display: none; }
+  .table-wrap table thead th:nth-child(8),
+  .table-wrap table tbody td:nth-child(8) { display: none; }
+
+  /* Report tables: hide less critical columns */
+  .report-table thead th:nth-child(n+6),
+  .report-table tbody td:nth-child(n+6) { display: none; }
+
+  /* Stats grid stack on mobile */
+  .stats-grid { grid-template-columns: 1fr 1fr !important; }
+
+  /* Filter tabs scroll horizontally */
+  .catalogue-tabs { grid-template-columns: 1fr !important; }
+  .catalogue-tabs-4 { grid-template-columns: 1fr !important; }
+
+  /* Row actions stack */
+  .row-actions { flex-direction: column; gap: 4px !important; }
+  .row-actions .btn { width: 100%; }
+
+  /* Report filters grid */
+  .report-filters-grid { grid-template-columns: 1fr !important; }
+
+  /* Reduce page padding */
+  .page-body { padding: 12px !important; }
+
+  /* Table text smaller */
+  .table-wrap table { font-size: 12px; }
+  .table-wrap table th, .table-wrap table td { padding: 6px 8px; }
+}
+
+@media (max-width: 480px) {
+  .stats-grid { grid-template-columns: 1fr !important; }
+  .stat-card { padding: 12px !important; }
+  .stat-value { font-size: 20px !important; }
+}
+
+/* Bin Card print styles */
+@media print {
+  .no-print { display: none !important; }
+  .main-content { margin-left: 0 !important; }
+  .sidebar { display: none !important; }
+  .overlay-bg { display: none !important; }
+  .page-body { padding: 0 !important; }
+  .card { box-shadow: none !important; border: 1px solid #ddd !important; }
+  .btn { display: none !important; }
+  .modal-overlay { display: none !important; }
+}

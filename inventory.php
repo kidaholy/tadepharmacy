@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/sales_lib.php';
+require_once __DIR__ . '/purchases_lib.php';
 
 $pdo = getDB();
 $msg = '';
@@ -60,6 +61,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 if ($dup->fetch()) {
                     $error = 'Another batch with this number already exists for this medicine.';
                 } else {
+                    $oldQty = (int)$b['quantity'];
                     $pdo->prepare("
                         UPDATE batches
                         SET medicine_id=?, batch_number=?, quantity=?, purchase_price=?,
@@ -71,6 +73,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         $sellingPrice, $expiryDate, $manufactureDate, $variant, $modelNumber,
                         $serialNumber, $warrantyPeriod, $warrantyExpiry, $bid
                     ]);
+                    auditLog($pdo, 'batch_edit', 'batch', $bid,
+                        "Batch {$batchNumber}: qty {$oldQty}→{$quantity}, buy {$purchasePrice}, sell {$sellingPrice}");
                     $msg = 'Batch updated successfully.';
                 }
             }
@@ -78,7 +82,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
     if ($act === 'delete_batch') {
         try {
-            $pdo->prepare("DELETE FROM batches WHERE id=?")->execute([(int)$_POST['batch_id']]);
+            $delBid = (int)$_POST['batch_id'];
+            $delInfo = $pdo->prepare("SELECT b.batch_number, b.quantity, m.name FROM batches b JOIN medicines m ON m.id=b.medicine_id WHERE b.id=?");
+            $delInfo->execute([$delBid]);
+            $delRow = $delInfo->fetch();
+            $pdo->prepare("DELETE FROM batches WHERE id=?")->execute([$delBid]);
+            if ($delRow) auditLog($pdo, 'batch_delete', 'batch', $delBid,
+                'Deleted batch ' . $delRow['batch_number'] . ' of ' . $delRow['name'] . ' (qty=' . $delRow['quantity'] . ')');
             $msg = 'Batch removed.';
         } catch (PDOException $e) {
             $error = 'Cannot delete batch: It is linked to existing sales records.';
@@ -265,6 +275,7 @@ renderSidebar();
       <?php if ($viewBatches): ?>
       <input type="hidden" name="med" value="<?= $medId ?>">
       <a href="inventory.php?<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left"></i> All products</a>
+      <a href="bin_card.php?id=<?= $medId ?>" class="btn btn-ghost btn-sm"><i data-lucide="file-text"></i> Bin Card</a>
       <?php endif; ?>
       <div class="search-bar"><i data-lucide="search"></i><input type="text" name="q" value="<?= htmlspecialchars($search) ?>" placeholder="Search product or batch..."></div>
       <button type="submit" class="btn btn-ghost btn-sm">Search</button>
@@ -388,7 +399,10 @@ renderSidebar();
         <td style="font-size:12px;"><?= formatExpiryDate($r['next_expiry'] ?? '') ?></td>
         <td><span class="badge <?= $statusClass ?>"><?= $statusLabel ?></span></td>
         <td>
-          <a href="inventory.php?med=<?= (int)$r['medicine_id'] ?>&<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm">View batches</a>
+          <div class="row-actions">
+            <a href="inventory.php?med=<?= (int)$r['medicine_id'] ?>&<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm">Batches</a>
+            <a href="bin_card.php?id=<?= (int)$r['medicine_id'] ?>" class="btn btn-ghost btn-sm">Bin Card</a>
+          </div>
         </td>
       </tr>
       <?php endforeach; ?>

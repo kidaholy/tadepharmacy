@@ -3,6 +3,7 @@ require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/sales_lib.php';
 require_once __DIR__ . '/customers_lib.php';
 require_once __DIR__ . '/notifications_lib.php';
+require_once __DIR__ . '/purchases_lib.php';
 
 $pdo  = getDB();
 $error = '';
@@ -122,6 +123,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     ]);
                     $updBatch->execute([$li['qty'], $li['batch_id']]);
                     checkStockAlerts($pdo, $li['medicine_id']);
+                    auditLog($pdo, 'sale_stock_out', 'batch', $li['batch_id'],
+                        'Sale ' . $invoice . ': -' . $li['qty'] . ' ' . ($li['unit'] ?? '') . ' @ ' . number_format($li['price'], 2));
                 }
 
                 if ($paid > 0) {
