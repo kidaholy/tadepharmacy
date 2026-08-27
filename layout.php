@@ -63,7 +63,7 @@ $navDefs = [
     ['page' => 'inventory',     'icon' => 'boxes',             'label' => 'Inventory',     'perm' => 'inventory.view'],
     ['page' => 'reports',       'icon' => 'bar-chart-3',       'label' => 'Reports',       'perm' => 'reports.view'],
     ['page' => 'landing_cms',   'icon' => 'layout-template',   'label' => 'Landing Page',  'perm' => 'landing.edit'],
-    ['page' => 'administrator', 'icon' => 'shield',            'label' => 'Administrator', 'perm' => ['users.manage', 'roles.manage']],
+    ['page' => 'administrator', 'icon' => 'shield',            'label' => 'Administrator', 'perm' => ['users.manage', 'roles.manage', 'categories.manage']],
     ['page' => 'settings',      'icon' => 'settings',          'label' => 'Settings',      'perm' => 'settings.view'],
 ];
 foreach ($navDefs as $item) {

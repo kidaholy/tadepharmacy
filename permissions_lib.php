@@ -46,6 +46,7 @@ function permissionCatalog(): array {
         'Administration' => [
             'users.manage' => 'Manage Users',
             'roles.manage' => 'Manage Roles & Permissions',
+            'categories.manage' => 'Manage Categories',
         ],
         'System' => [
             'demo.manage'      => 'Load & Remove Demo Data',
@@ -166,6 +167,9 @@ function seedPermissionsAndRoles(PDO $pdo): void {
 
     if ($adminRoleId) {
         grantMissingAllows($pdo, $adminRoleId, allPermissionKeys());
+    }
+    if ($managerRoleId) {
+        grantMissingAllows($pdo, $managerRoleId, ['categories.manage']);
     }
     if ($managerRoleId) {
         grantMissingAllows($pdo, $managerRoleId, [

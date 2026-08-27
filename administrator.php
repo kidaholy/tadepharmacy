@@ -1,20 +1,25 @@
 <?php
 require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/permissions_lib.php';
+require_once __DIR__ . '/sales_lib.php';
 
-requireAnyPermission(['users.manage', 'roles.manage']);
+requireAnyPermission(['users.manage', 'roles.manage', 'categories.manage']);
 
 $pdo = getDB();
 $currentUser = currentUser();
-$tab = $_GET['tab'] ?? (can('roles.manage') ? 'roles' : 'users');
+$tab = $_GET['tab'] ?? (can('roles.manage') ? 'roles' : (can('users.manage') ? 'users' : 'categories'));
 if ($tab === 'roles' && !can('roles.manage')) {
-    $tab = 'users';
+    $tab = can('users.manage') ? 'users' : 'categories';
 }
 if ($tab === 'users' && !can('users.manage')) {
-    $tab = 'roles';
+    $tab = can('roles.manage') ? 'roles' : 'categories';
+}
+if ($tab === 'categories' && !can('categories.manage')) {
+    $tab = can('roles.manage') ? 'roles' : 'users';
 }
 $editRoleId = (int) ($_GET['edit_role'] ?? 0);
 $editUserId = (int) ($_GET['edit_user'] ?? 0);
+$editCategoryId = (int) ($_GET['edit_category'] ?? 0);
 $error = '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
@@ -100,6 +105,103 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         header('Location: administrator.php?tab=users');
         exit;
     }
+
+    if ($act === 'create_category' && can('categories.manage')) {
+        $name = trim($_POST['name'] ?? '');
+        $description = trim($_POST['description'] ?? '');
+        $productType = trim($_POST['product_type'] ?? 'medicine');
+        if (!isset(productTypes()[$productType])) {
+            $productType = 'medicine';
+        }
+        
+        if ($name === '') {
+            $error = 'Category name is required.';
+            $tab = 'categories';
+        } else {
+            $exists = $pdo->prepare('SELECT id, product_type FROM categories WHERE LOWER(name) = LOWER(?) LIMIT 1');
+            $exists->execute([$name]);
+            $existing = $exists->fetch();
+            if ($existing && ($existing['product_type'] ?? 'medicine') === $productType) {
+                $error = 'A category with this name already exists for ' . strtolower(productTypes()[$productType]) . '.';
+                $tab = 'categories';
+            } elseif ($existing) {
+                $error = 'Category "' . $name . '" already exists under ' . strtolower(productTypes()[$existing['product_type'] ?? 'medicine']) . '. Choose a different name.';
+                $tab = 'categories';
+            } else {
+                $pdo->prepare('INSERT INTO categories (name, description, product_type) VALUES (?, ?, ?)')
+                    ->execute([$name, $description, $productType]);
+                flashSet('success', 'Category created successfully.');
+                header('Location: administrator.php?tab=categories&type=' . urlencode($productType));
+                exit;
+            }
+        }
+    }
+
+    if ($act === 'update_category' && can('categories.manage')) {
+        $categoryId = (int) ($_POST['category_id'] ?? 0);
+        $name = trim($_POST['name'] ?? '');
+        $description = trim($_POST['description'] ?? '');
+        $productType = trim($_POST['product_type'] ?? 'medicine');
+        if (!isset(productTypes()[$productType])) {
+            $productType = 'medicine';
+        }
+        
+        if ($name === '') {
+            $error = 'Category name is required.';
+            $tab = 'categories';
+            $editCategoryId = $categoryId;
+        } else {
+            $exists = $pdo->prepare('SELECT id, product_type FROM categories WHERE LOWER(name) = LOWER(?) AND id != ? LIMIT 1');
+            $exists->execute([$name, $categoryId]);
+            $existing = $exists->fetch();
+            if ($existing && ($existing['product_type'] ?? 'medicine') === $productType) {
+                $error = 'A category with this name already exists for ' . strtolower(productTypes()[$productType]) . '.';
+                $tab = 'categories';
+                $editCategoryId = $categoryId;
+            } elseif ($existing) {
+                $error = 'Category "' . $name . '" already exists under ' . strtolower(productTypes()[$existing['product_type'] ?? 'medicine']) . '. Choose a different name.';
+                $tab = 'categories';
+                $editCategoryId = $categoryId;
+            } else {
+                $pdo->prepare('UPDATE categories SET name = ?, description = ?, product_type = ? WHERE id = ?')
+                    ->execute([$name, $description, $productType, $categoryId]);
+                flashSet('success', 'Category updated successfully.');
+                header('Location: administrator.php?tab=categories&type=' . urlencode($productType));
+                exit;
+            }
+        }
+    }
+
+    if ($act === 'delete_category' && can('categories.manage')) {
+        $categoryId = (int) ($_POST['category_id'] ?? 0);
+        $moveTo = (int) ($_POST['move_to'] ?? 0);
+        
+        $catRow = $pdo->prepare('SELECT product_type FROM categories WHERE id = ?');
+        $catRow->execute([$categoryId]);
+        $deletedType = $catRow->fetchColumn() ?: 'medicine';
+        
+        // Check if category has medicines
+        $stmt = $pdo->prepare('SELECT COUNT(*) FROM medicines WHERE category_id = ?');
+        $stmt->execute([$categoryId]);
+        $medCount = (int) $stmt->fetchColumn();
+        
+        if ($medCount > 0 && $moveTo === 0) {
+            $error = 'This category has ' . $medCount . ' medicine(s). Please select a category to move them to before deleting.';
+            $tab = 'categories';
+            $editCategoryId = $categoryId;
+        } else {
+            // Move medicines if needed
+            if ($medCount > 0 && $moveTo > 0) {
+                $pdo->prepare('UPDATE medicines SET category_id = ? WHERE category_id = ?')
+                    ->execute([$moveTo, $categoryId]);
+            }
+            
+            $pdo->prepare('DELETE FROM categories WHERE id = ?')->execute([$categoryId]);
+            flashSet('success', 'Category deleted' . ($medCount > 0 ? " ({$medCount} medicine(s) moved)" : '') . '.');
+            header('Location: administrator.php?tab=categories&type=' . urlencode($deletedType));
+            exit;
+        }
+    }
 }
 
 $roles = getAllRoles($pdo);
@@ -115,6 +217,55 @@ if ($editUserId) {
         }
     }
 }
+
+// Categories data - all categories with counts
+$allCategories = $pdo->query('
+    SELECT c.*, COUNT(m.id) AS medicine_count
+    FROM categories c
+    LEFT JOIN medicines m ON m.category_id = c.id
+    GROUP BY c.id
+    ORDER BY c.name COLLATE NOCASE
+')->fetchAll();
+
+$categoriesByType = ['medicine' => [], 'cosmetic' => [], 'equipment' => []];
+foreach ($allCategories as $c) {
+    $pt = $c['product_type'] ?? 'medicine';
+    if (isset($categoriesByType[$pt])) {
+        $categoriesByType[$pt][] = $c;
+    }
+}
+
+// Item counts per product type (matches Medicines page tabs)
+$typeCounts = ['medicine' => 0, 'cosmetic' => 0, 'equipment' => 0];
+foreach ($pdo->query("SELECT COALESCE(product_type,'medicine') AS t, COUNT(*) AS c FROM medicines GROUP BY t") as $row) {
+    if (isset($typeCounts[$row['t']])) {
+        $typeCounts[$row['t']] = (int) $row['c'];
+    }
+}
+
+$catType = trim($_GET['type'] ?? $_GET['cat_type'] ?? 'medicine');
+if (!isset(productTypes()[$catType])) {
+    $catType = 'medicine';
+}
+
+$typeCategories = $categoriesByType[$catType] ?? [];
+$categories = categoryDetailsForType($typeCategories, $catType);
+$hiddenCategories = array_values(array_filter($typeCategories, function ($c) use ($categories) {
+    $ids = array_map(fn($x) => (int) $x['id'], $categories);
+    return !in_array((int) $c['id'], $ids, true);
+}));
+$typeMeta = productTypeMeta()[$catType];
+
+$editCategory = null;
+if ($editCategoryId) {
+    foreach ($typeCategories as $c) {
+        if ((int) $c['id'] === $editCategoryId) {
+            $editCategory = $c;
+            break;
+        }
+    }
+}
+
 $catalog = permissionCatalog();
 
 renderHead('Administrator');
@@ -144,6 +295,11 @@ renderSidebar();
   <?php if (can('users.manage')): ?>
   <a href="administrator.php?tab=users" class="admin-tab<?= $tab === 'users' ? ' active' : '' ?>">
     <i data-lucide="users"></i> Users
+  </a>
+  <?php endif; ?>
+  <?php if (can('categories.manage')): ?>
+  <a href="administrator.php?tab=categories" class="admin-tab<?= $tab === 'categories' ? ' active' : '' ?>">
+    <i data-lucide="folder"></i> Categories
   </a>
   <?php endif; ?>
 </div>
@@ -397,6 +553,188 @@ renderSidebar();
     </div>
   </div>
 </div>
+
+<?php elseif ($tab === 'categories' && can('categories.manage')): ?>
+
+<?php
+$catPlaceholders = [
+    'medicine'  => 'e.g. Antibiotics & Antimicrobials, Pain Relief',
+    'cosmetic'  => 'e.g. Cosmetics - Face Care, Cosmetics - Body Care',
+    'equipment' => 'e.g. Diagnostic Equipment, Pharmacy Equipment',
+];
+$catPlaceholder = $catPlaceholders[$catType] ?? 'e.g. Category name';
+?>
+
+<?php renderTypeTabs('administrator.php', $catType, $typeCounts, ['tab' => 'categories']); ?>
+
+<p style="font-size:13px;color:var(--text-300);margin:-8px 0 16px;">
+  Manage <?= strtolower($typeMeta['title']) ?> categories — the same list used when adding or filtering <?= strtolower($typeMeta['plural']) ?> in the catalogue.
+</p>
+
+<div class="grid-2 admin-grid">
+  <div style="display:flex;flex-direction:column;gap:20px;">
+    <div class="card">
+      <div class="card-header"><span class="card-title">Create <?= htmlspecialchars($typeMeta['title']) ?> Category</span></div>
+      <form method="POST">
+        <input type="hidden" name="act" value="create_category">
+        <input type="hidden" name="product_type" value="<?= htmlspecialchars($catType) ?>">
+        <div class="form-group">
+          <label>Category Name *</label>
+          <input type="text" name="name" placeholder="<?= htmlspecialchars($catPlaceholder) ?>" required>
+        </div>
+        <div class="form-group">
+          <label>Description</label>
+          <textarea name="description" rows="2" placeholder="Optional description"></textarea>
+        </div>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary"><i data-lucide="plus"></i> Create Category</button>
+        </div>
+      </form>
+    </div>
+
+    <?php if ($editCategory): ?>
+    <div class="card">
+      <div class="card-header"><span class="card-title">Delete Category</span></div>
+      <p style="font-size:13px;color:var(--text-300);margin-bottom:16px;">
+        <?php if ((int) $editCategory['medicine_count'] > 0): ?>
+          This category has <strong><?= (int) $editCategory['medicine_count'] ?></strong> item(s). You must move them to another category before deleting.
+        <?php else: ?>
+          This category is empty. You can safely delete it.
+        <?php endif; ?>
+      </p>
+      <form method="POST" onsubmit="return confirm('Delete this category permanently?')">
+        <input type="hidden" name="act" value="delete_category">
+        <input type="hidden" name="category_id" value="<?= (int) $editCategory['id'] ?>">
+        <?php if ((int) $editCategory['medicine_count'] > 0): ?>
+        <div class="form-group">
+          <label>Move items to</label>
+          <select name="move_to" required>
+            <option value="0">— Select a category —</option>
+            <?php foreach ($typeCategories as $c):
+              if ((int) $c['id'] !== (int) $editCategory['id']): ?>
+            <option value="<?= (int) $c['id'] ?>"><?= htmlspecialchars($c['name']) ?></option>
+            <?php endif; endforeach; ?>
+          </select>
+        </div>
+        <?php endif; ?>
+        <button type="submit" class="btn btn-danger btn-sm"><i data-lucide="trash-2"></i> Delete Category</button>
+      </form>
+    </div>
+    <?php endif; ?>
+  </div>
+
+  <div class="card">
+    <?php if ($editCategory): ?>
+    <div class="card-header">
+      <span class="card-title">Edit Category — <?= htmlspecialchars($editCategory['name']) ?></span>
+    </div>
+    <form method="POST">
+      <input type="hidden" name="act" value="update_category">
+      <input type="hidden" name="category_id" value="<?= (int) $editCategory['id'] ?>">
+      <input type="hidden" name="product_type" value="<?= htmlspecialchars($catType) ?>">
+      <div class="form-group">
+        <label>Product Type</label>
+        <input type="text" value="<?= htmlspecialchars($typeMeta['title']) ?>" disabled>
+      </div>
+      <div class="form-group">
+        <label>Category Name</label>
+        <input type="text" name="name" value="<?= htmlspecialchars($editCategory['name']) ?>" required>
+      </div>
+      <div class="form-group">
+        <label>Description</label>
+        <textarea name="description" rows="2"><?= htmlspecialchars($editCategory['description'] ?? '') ?></textarea>
+      </div>
+      <div class="form-actions" style="display:flex;gap:10px;flex-wrap:wrap;">
+        <button type="submit" class="btn btn-primary"><i data-lucide="save"></i> Save Category</button>
+        <a href="administrator.php?tab=categories&type=<?= htmlspecialchars($catType) ?>" class="btn btn-ghost">Cancel</a>
+      </div>
+    </form>
+    <?php else: ?>
+    <div class="card-header"><span class="card-title">Edit Category</span></div>
+    <div class="empty-state" style="padding:40px 20px;text-align:center;">
+      <i data-lucide="folder" style="width:48px;height:48px;color:var(--text-300);margin-bottom:12px;"></i>
+      <p style="color:var(--text-300);font-size:14px;">Select a category from the list to edit its name or description.</p>
+    </div>
+    <?php endif; ?>
+  </div>
+</div>
+
+<div class="card" style="margin-top:20px;">
+  <div class="card-header">
+    <span class="card-title"><?= htmlspecialchars($typeMeta['plural']) ?> Categories (<?= count($categories) ?>)</span>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Category Name</th>
+          <th>Description</th>
+          <th>Items</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php if (empty($categories)): ?>
+        <tr><td colspan="4" style="text-align:center;padding:40px;color:var(--text-300);">No <?= strtolower($typeMeta['title']) ?> categories yet. Create one above!</td></tr>
+        <?php else: ?>
+        <?php foreach ($categories as $cat): ?>
+        <tr<?= (int) $cat['id'] === $editCategoryId ? ' style="background:var(--accent-glow);"' : '' ?>>
+          <td><strong><?= htmlspecialchars($cat['name']) ?></strong></td>
+          <td style="color:var(--text-300);font-size:13px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            <?= htmlspecialchars($cat['description'] ?? '—') ?>
+          </td>
+          <td><span class="badge badge-gray"><?= (int) $cat['medicine_count'] ?></span></td>
+          <td style="text-align:right;white-space:nowrap;">
+            <a href="administrator.php?tab=categories&type=<?= htmlspecialchars($catType) ?>&edit_category=<?= (int) $cat['id'] ?>" class="btn btn-ghost btn-sm">
+              <i data-lucide="edit"></i> Edit
+            </a>
+          </td>
+        </tr>
+        <?php endforeach; ?>
+        <?php endif; ?>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<?php if ($hiddenCategories): ?>
+<div class="card" style="margin-top:20px;">
+  <div class="card-header">
+    <span class="card-title">Catalogue Buckets (<?= count($hiddenCategories) ?>)</span>
+  </div>
+  <p style="font-size:13px;color:var(--text-300);padding:0 16px 12px;margin:0;">
+    Generic groupings hidden from the <?= strtolower($typeMeta['plural']) ?> filter chips but still used by some items.
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Category Name</th>
+          <th>Description</th>
+          <th>Items</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        <?php foreach ($hiddenCategories as $cat): ?>
+        <tr<?= (int) $cat['id'] === $editCategoryId ? ' style="background:var(--accent-glow);"' : '' ?>>
+          <td><strong><?= htmlspecialchars($cat['name']) ?></strong> <span class="badge badge-gray" style="margin-left:6px;">bucket</span></td>
+          <td style="color:var(--text-300);font-size:13px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">
+            <?= htmlspecialchars($cat['description'] ?? '—') ?>
+          </td>
+          <td><span class="badge badge-gray"><?= (int) $cat['medicine_count'] ?></span></td>
+          <td style="text-align:right;white-space:nowrap;">
+            <a href="administrator.php?tab=categories&type=<?= htmlspecialchars($catType) ?>&edit_category=<?= (int) $cat['id'] ?>" class="btn btn-ghost btn-sm">
+              <i data-lucide="edit"></i> Edit
+            </a>
+          </td>
+        </tr>
+        <?php endforeach; ?>
+      </tbody>
+    </table>
+  </div>
+</div>
+<?php endif; ?>
 
 <?php endif; ?>
 
