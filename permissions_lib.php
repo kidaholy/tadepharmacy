@@ -49,7 +49,6 @@ function permissionCatalog(): array {
             'categories.manage' => 'Manage Categories',
         ],
         'System' => [
-            'demo.manage'      => 'Load & Remove Demo Data',
             'sales.clear_all'  => 'Clear All Sales Data',
         ],
     ];

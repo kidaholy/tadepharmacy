@@ -288,33 +288,6 @@ renderSidebar();
       </div>
     </div>
 
-    <div class="card" style="border-color:rgba(79,142,247,0.35);margin-bottom:20px;">
-      <div class="card-header"><span class="card-title" style="color:var(--accent-dark);">Demo Data</span></div>
-      <?php if (can('demo.manage')): ?>
-      <p style="font-size:13px;color:var(--text-300);margin-bottom:16px;">
-        Load sample customers, suppliers, purchases, sales (all payment methods), credit scenarios, and expenses
-        so you can test Reports, Dashboard, POS, and Customers.
-      </p>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;">
-        <form method="POST" action="actions.php">
-          <input type="hidden" name="act" value="seed_demo">
-          <button type="submit" class="btn btn-primary"><i data-lucide="database"></i> Load Demo Data</button>
-        </form>
-        <form method="POST" action="actions.php" onsubmit="return confirm('Replace existing demo data? This clears demo sales, purchases, batches, and re-seeds.')">
-          <input type="hidden" name="act" value="seed_demo">
-          <input type="hidden" name="force" value="1">
-          <button type="submit" class="btn btn-ghost">Replace Demo Data</button>
-        </form>
-        <form method="POST" action="actions.php" onsubmit="return confirm('Remove all demo sales, purchases, batches, customers, suppliers, and expenses?')">
-          <input type="hidden" name="act" value="clear_demo">
-          <button type="submit" class="btn btn-danger btn-sm"><i data-lucide="trash-2"></i> Remove Demo Data</button>
-        </form>
-      </div>
-      <?php else: ?>
-      <p style="font-size:13px;color:var(--text-300);">You do not have permission to manage demo data.</p>
-      <?php endif; ?>
-    </div>
-
     <?php if (can('sales.clear_all')): ?>
     <div class="card" style="border-color:rgba(242,95,92,0.3);">
       <div class="card-header"><span class="card-title" style="color:var(--danger);">Danger Zone</span></div>

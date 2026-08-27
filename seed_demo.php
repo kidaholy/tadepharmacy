@@ -2,7 +2,6 @@
 /**
  * Seed demo data for testing reports, sales, purchases, credit, and inventory.
  * CLI:  php seed_demo.php [--force]
- * Web:  Settings → Load Demo Data
  *
  * The dataset spans the last 12 months so "This Month", "Last 30 Days",
  * "This Year" and custom range reports all show data immediately:
