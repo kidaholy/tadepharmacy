@@ -159,6 +159,21 @@ switch ($report) {
             $st->execute([$from, $to]);
             foreach ($st as $r) $rows[] = [$r['supplier_name'], $r['purchase_number'], $r['return_number'], $r['total_amount'], $r['reason'], $r['return_date']];
             $filename = 'purchase-returns-' . $from . '-' . $to;
+        } elseif ($tab === 'credit') {
+            $headers = ['Supplier', 'Total Purchased', 'Total Paid', 'Outstanding'];
+            $st = $pdo->query("
+                SELECT s.name,
+                       COALESCE(SUM(CASE WHEN p.status='received' THEN COALESCE(p.grand_total,p.total_amount) ELSE 0 END),0) AS purchased,
+                       COALESCE(SUM(CASE WHEN p.status!='cancelled' THEN COALESCE(p.total_paid,0) ELSE 0 END),0) AS paid,
+                       COALESCE(SUM(CASE WHEN p.status='received' THEN COALESCE(p.grand_total,p.total_amount)-COALESCE(p.total_paid,0)-COALESCE(p.total_returned,0) ELSE 0 END),0) AS outstanding
+                FROM suppliers s
+                LEFT JOIN purchases p ON p.supplier_id = s.id
+                GROUP BY s.id
+                HAVING purchased > 0 OR outstanding > 0
+                ORDER BY outstanding DESC, s.name
+            ");
+            foreach ($st as $r) $rows[] = [$r['name'], $r['purchased'], $r['paid'], $r['outstanding']];
+            $filename = 'supplier-payables-' . $from . '-' . $to;
         } else {
             $headers = ['Invoice', 'Supplier', 'Date', 'Total', 'Paid', 'Due', 'Status'];
             $sql = "SELECT p.*, s.name AS supplier_name FROM purchases p LEFT JOIN suppliers s ON s.id=p.supplier_id

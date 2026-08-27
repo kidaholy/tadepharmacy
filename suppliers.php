@@ -21,9 +21,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: suppliers.php?id=' . $sid);
             exit;
         }
+        if ($act === 'delete') {
+            $supplierId = (int) ($_POST['id'] ?? 0);
+            deleteSupplier($pdo, $supplierId);
+            flashSet('success', 'Supplier removed.');
+            header('Location: suppliers.php');
+            exit;
+        }
     } catch (Throwable $e) {
         $error = $e->getMessage();
-        $action = 'edit';
+        if (($act ?? '') === 'delete') {
+            $action = 'view';
+            $id = (int) ($_POST['id'] ?? $id);
+        } else {
+            $action = 'edit';
+        }
     }
 }
 
@@ -36,12 +48,14 @@ $ledger = [];
 $purchases = [];
 $payments = [];
 $returns = [];
+$supplierDeleteBlockers = [];
 if ($id) {
     $st = $pdo->prepare("SELECT * FROM suppliers WHERE id=?");
     $st->execute([$id]);
     $supplier = $st->fetch();
     if (!$supplier) { header('Location: suppliers.php'); exit; }
     $totals = supplierTotals($pdo, $id);
+    $supplierDeleteBlockers = supplierDeleteBlockers($pdo, $id);
     $action = ($action === 'edit') ? 'edit' : 'view';
     if ($action === 'view') {
         if ($tab === 'ledger') $ledger = supplierLedger($pdo, $id);
@@ -130,6 +144,23 @@ renderSidebar();
       <a href="suppliers.php<?= !empty($edit['id']) ? '?id='.(int)$edit['id'] : '' ?>" class="btn btn-ghost">Cancel</a>
     </div>
   </form>
+  <?php if (!empty($edit['id']) && (can('suppliers.manage') || can('purchases.manage'))):
+    $editDeleteBlockers = supplierDeleteBlockers($pdo, (int) $edit['id']);
+  ?>
+  <div style="margin-top:24px;padding-top:20px;border-top:1px solid var(--border);">
+    <div style="font-size:13px;font-weight:600;color:var(--danger);margin-bottom:8px;">Remove Supplier</div>
+    <?php if ($editDeleteBlockers): ?>
+    <p style="font-size:13px;color:var(--text-300);margin:0;"><?= htmlspecialchars($editDeleteBlockers[0]) ?></p>
+    <?php else: ?>
+    <p style="font-size:13px;color:var(--text-300);margin:0 0 12px;">Permanently remove this supplier. This cannot be undone.</p>
+    <form method="POST" onsubmit="return confirm('Delete this supplier permanently?')">
+      <input type="hidden" name="act" value="delete">
+      <input type="hidden" name="id" value="<?= (int) $edit['id'] ?>">
+      <button type="submit" class="btn btn-danger btn-sm"><i data-lucide="trash-2"></i> Delete Supplier</button>
+    </form>
+    <?php endif; ?>
+  </div>
+  <?php endif; ?>
 </div>
 
 <?php elseif ($action === 'view' && $supplier): ?>
@@ -261,6 +292,22 @@ renderSidebar();
       </tbody>
     </table>
   </div>
+</div>
+<?php endif; ?>
+
+<?php if (can('suppliers.manage') || can('purchases.manage')): ?>
+<div class="card mb-20" style="border-color:rgba(242,95,92,0.3);">
+  <div class="card-header"><span class="card-title" style="color:var(--danger);">Remove Supplier</span></div>
+  <?php if ($supplierDeleteBlockers): ?>
+  <p style="font-size:13px;color:var(--text-300);margin:0;"><?= htmlspecialchars($supplierDeleteBlockers[0]) ?></p>
+  <?php else: ?>
+  <p style="font-size:13px;color:var(--text-300);margin:0 0 12px;">Permanently remove this supplier record. This cannot be undone.</p>
+  <form method="POST" onsubmit="return confirm(<?= json_encode('Delete ' . $supplier['name'] . ' permanently? This cannot be undone.') ?>)">
+    <input type="hidden" name="act" value="delete">
+    <input type="hidden" name="id" value="<?= (int) $supplier['id'] ?>">
+    <button type="submit" class="btn btn-danger btn-sm"><i data-lucide="trash-2"></i> Delete Supplier</button>
+  </form>
+  <?php endif; ?>
 </div>
 <?php endif; ?>
 

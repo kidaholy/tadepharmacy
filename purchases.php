@@ -1268,6 +1268,19 @@ recalc();
     <?php endif; ?>
     <?php if ($purchase['status'] === 'received' && $due > 0.009): ?>
     <button type="button" class="btn btn-primary" onclick="openModal('payModal')">Make Payment</button>
+    <?php endif; ?>
+    <?php
+    $hasReturnable = false;
+    if ($purchase['status'] === 'received') {
+        foreach ($items as $it) {
+            if ((int)$it['quantity'] - (int)($it['returned_quantity'] ?? 0) > 0) {
+                $hasReturnable = true;
+                break;
+            }
+        }
+    }
+    ?>
+    <?php if ($hasReturnable): ?>
     <button type="button" class="btn btn-ghost" onclick="openModal('returnModal')">Return</button>
     <?php endif; ?>
     <?php if ($purchase['status'] !== 'cancelled' && $paid <= 0.009): ?>

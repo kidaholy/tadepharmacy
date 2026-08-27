@@ -225,6 +225,44 @@ function saveSupplier(PDO $pdo, array $data, int $id = 0): int {
     return $newId;
 }
 
+/** Reasons why a supplier cannot be deleted (empty = safe to delete). */
+function supplierDeleteBlockers(PDO $pdo, int $supplierId): array {
+    $st = $pdo->prepare('SELECT id FROM suppliers WHERE id=?');
+    $st->execute([$supplierId]);
+    if (!$st->fetch()) {
+        return ['Supplier not found.'];
+    }
+
+    $reasons = [];
+    $cnt = $pdo->prepare('SELECT COUNT(*) FROM purchases WHERE supplier_id=?');
+    $cnt->execute([$supplierId]);
+    $purchaseCount = (int) $cnt->fetchColumn();
+    if ($purchaseCount > 0) {
+        $reasons[] = "This supplier has {$purchaseCount} purchase invoice(s). Mark as inactive instead of deleting to keep your records.";
+    }
+
+    $totals = supplierTotals($pdo, $supplierId);
+    if (abs($totals['outstanding']) > 0.009) {
+        $reasons[] = 'Outstanding balance must be zero before deleting this supplier.';
+    }
+
+    return $reasons;
+}
+
+function deleteSupplier(PDO $pdo, int $supplierId): void {
+    $reasons = supplierDeleteBlockers($pdo, $supplierId);
+    if ($reasons) {
+        throw new RuntimeException($reasons[0]);
+    }
+
+    $nameSt = $pdo->prepare('SELECT name FROM suppliers WHERE id=?');
+    $nameSt->execute([$supplierId]);
+    $name = (string) $nameSt->fetchColumn();
+
+    $pdo->prepare('DELETE FROM suppliers WHERE id=?')->execute([$supplierId]);
+    auditLog($pdo, 'delete', 'supplier', $supplierId, $name);
+}
+
 function parsePurchaseItemsFromPost(PDO $pdo, array $post): array {
     $meds = $post['medicine_id'] ?? [];
     $codes = $post['product_code'] ?? [];
@@ -375,7 +413,7 @@ function createPurchase(PDO $pdo, array $post, int $userId): int {
 
     $intent = $post['save_intent'] ?? 'receive';
     $requireApproval = getSetting('purchase_require_approval', '0') === '1';
-    $canApprove = function_exists('can') && (can('purchases.approve') || can('purchases.manage'));
+    $canApprove = function_exists('can') && can('purchases.approve');
     if ($intent === 'draft') {
         $status = 'draft';
     } elseif ($requireApproval && !$canApprove) {
@@ -523,11 +561,29 @@ function receivePurchaseLine(PDO $pdo, int $purchaseId, ?int $supplierId, array 
     return (int)$pdo->lastInsertId();
 }
 
+function batchSoldQty(PDO $pdo, int $batchId): int {
+    $st = $pdo->prepare('SELECT COALESCE(SUM(quantity), 0) FROM sale_items WHERE batch_id=?');
+    $st->execute([$batchId]);
+    return (int) $st->fetchColumn();
+}
+
+function batchOnHandQty(PDO $pdo, ?int $batchId): int {
+    if (!$batchId) {
+        return 0;
+    }
+    $st = $pdo->prepare('SELECT quantity FROM batches WHERE id=?');
+    $st->execute([$batchId]);
+    return max(0, (int) $st->fetchColumn());
+}
+
 function receivePurchase(PDO $pdo, int $purchaseId, int $userId, array $post = []): void {
     $p = fetchPurchase($pdo, $purchaseId);
     if (!$p) throw new RuntimeException('Purchase not found.');
     if (!in_array($p['status'], ['draft', 'pending_approval'], true)) {
         throw new RuntimeException('This purchase has already been received.');
+    }
+    if (($p['status'] ?? '') === 'pending_approval' && function_exists('can') && !can('purchases.approve')) {
+        throw new RuntimeException('You do not have permission to approve and receive this purchase.');
     }
     $items = fetchPurchaseItems($pdo, $purchaseId);
 
@@ -673,8 +729,16 @@ function cancelPurchase(PDO $pdo, int $purchaseId, int $userId): void {
             foreach ($items as $it) {
                 $qty = (int)$it['quantity'] - (int)($it['returned_quantity'] ?? 0);
                 if ($qty > 0 && !empty($it['batch_id'])) {
-                    $pdo->prepare("UPDATE batches SET quantity = MAX(0, quantity - ?) WHERE id=?")->execute([$qty, $it['batch_id']]);
+                $batchId = (int) $it['batch_id'];
+                if (batchSoldQty($pdo, $batchId) > 0) {
+                    throw new RuntimeException('Cannot cancel this purchase: some units have already been sold.');
                 }
+                $onHand = batchOnHandQty($pdo, $batchId);
+                if ($qty > $onHand) {
+                    throw new RuntimeException('Cannot cancel this purchase: not enough stock on hand to reverse it.');
+                }
+                $pdo->prepare("UPDATE batches SET quantity = MAX(0, quantity - ?) WHERE id=?")->execute([$qty, $batchId]);
+            }
             }
         }
         $pdo->prepare("UPDATE purchases SET status='cancelled', total_due=0, updated_at=datetime('now') WHERE id=?")->execute([$purchaseId]);
@@ -704,6 +768,14 @@ function createPurchaseReturn(PDO $pdo, int $purchaseId, array $post, int $userI
         if ($qty <= 0) continue;
         if ($qty > $max) {
             throw new RuntimeException('Cannot return more than remaining quantity for a line.');
+        }
+        $batchId = $it['batch_id'] ? (int) $it['batch_id'] : null;
+        if ($batchId) {
+            $maxOnHand = batchOnHandQty($pdo, $batchId);
+            if ($qty > $maxOnHand) {
+                $label = $it['med_name'] ?? 'product';
+                throw new RuntimeException("Cannot return {$qty} units of \"{$label}\": only {$maxOnHand} on hand in stock.");
+            }
         }
         $unit = (float)$it['purchase_price'];
         $line = round($unit * $qty, 2);
