@@ -665,6 +665,392 @@ function updateDraftSellingPrices(PDO $pdo, int $purchaseId, array $sprices): vo
     }
 }
 
+/** Fetch one purchase line (with product meta) or null. */
+function fetchPurchaseItem(PDO $pdo, int $purchaseId, int $itemId): ?array {
+    $stmt = $pdo->prepare("
+        SELECT pi.*, m.name AS med_name, m.generic_name, m.unit, m.sku,
+               COALESCE(m.product_type,'medicine') AS product_type,
+               c.name AS category_name
+        FROM purchase_items pi
+        JOIN medicines m ON m.id = pi.medicine_id
+        LEFT JOIN categories c ON c.id = m.category_id
+        WHERE pi.purchase_id=? AND pi.id=?
+    ");
+    $stmt->execute([$purchaseId, $itemId]);
+    $row = $stmt->fetch();
+    return $row ?: null;
+}
+
+/**
+ * Recompute invoice totals from current line items.
+ * If payments already exceed the new total, the balance due becomes 0 (overpaid).
+ */
+function recalcPurchaseTotals(PDO $pdo, int $purchaseId, bool $allowBelowPaid = true): void {
+    $p = fetchPurchase($pdo, $purchaseId);
+    if (!$p) {
+        throw new RuntimeException('Purchase not found.');
+    }
+    $st = $pdo->prepare('SELECT COALESCE(SUM(line_total), 0) FROM purchase_items WHERE purchase_id=?');
+    $st->execute([$purchaseId]);
+    $subtotal = round((float)$st->fetchColumn(), 2);
+    $disc = max(0, (float)($p['discount'] ?? 0));
+    $tax = max(0, (float)($p['tax'] ?? 0));
+    $grand = round(max(0, $subtotal - $disc + $tax), 2);
+    $paid = (float)($p['total_paid'] ?? 0);
+    if (!$allowBelowPaid && $paid - $grand > 0.009) {
+        throw new RuntimeException(
+            'Cannot save: new total (' . currency($grand) . ') would be less than already paid (' . currency($paid) . ').'
+        );
+    }
+    $pdo->prepare("
+        UPDATE purchases
+        SET subtotal=?, grand_total=?, total_amount=?, updated_at=datetime('now')
+        WHERE id=?
+    ")->execute([$subtotal, $grand, $grand, $purchaseId]);
+    recalcPurchasePaymentStatus($pdo, $purchaseId);
+}
+
+/** Update purchase header fields (supplier, dates, notes, discount/tax). */
+function updatePurchaseHeader(PDO $pdo, int $purchaseId, array $post): void {
+    $p = fetchPurchase($pdo, $purchaseId);
+    if (!$p) {
+        throw new RuntimeException('Purchase not found.');
+    }
+    if (($p['status'] ?? '') === 'cancelled') {
+        throw new RuntimeException('Cancelled purchases cannot be edited.');
+    }
+
+    $supplierId = (int)($post['supplier_id'] ?? 0);
+    $supplierId = $supplierId > 0 ? $supplierId : null;
+    $purchaseDate = trim($post['purchase_date'] ?? '') ?: ($p['purchase_date'] ?: businessToday());
+    $terms = trim($post['payment_terms'] ?? ($p['payment_terms'] ?? '30'));
+    if (!isset(supplierPaymentTerms()[$terms])) {
+        $terms = '30';
+    }
+    $dueDate = dueDateFromTerms($purchaseDate, $terms, trim($post['due_date'] ?? '') ?: null);
+    $headerDisc = max(0, (float)($post['header_discount'] ?? $p['discount'] ?? 0));
+    $headerTax = max(0, (float)($post['header_tax'] ?? $p['tax'] ?? 0));
+    $reference = trim($post['reference'] ?? '');
+    $warehouse = trim($post['warehouse'] ?? '') ?: 'Main Store';
+    $notes = trim($post['notes'] ?? '');
+
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare("
+            UPDATE purchases SET
+                supplier_id=?, purchase_date=?, due_date=?, payment_terms=?,
+                discount=?, tax=?, reference=?, warehouse=?, notes=?,
+                updated_at=datetime('now')
+            WHERE id=?
+        ")->execute([
+            $supplierId, $purchaseDate, $dueDate, $terms,
+            $headerDisc, $headerTax,
+            $reference !== '' ? $reference : ($p['purchase_number'] ?? null),
+            $warehouse, $notes, $purchaseId,
+        ]);
+        recalcPurchaseTotals($pdo, $purchaseId);
+        auditLog($pdo, 'update', 'purchase', $purchaseId, ($p['purchase_number'] ?? '') . ' header updated');
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
+/**
+ * Normalize / validate fields for a single purchase line edit or add.
+ * Returns a sanitized field array ready to write.
+ */
+function normalizePurchaseItemInput(PDO $pdo, array $post, ?array $existing = null): array {
+    $mid = (int)($post['medicine_id'] ?? ($existing['medicine_id'] ?? 0));
+    if ($mid <= 0) {
+        throw new RuntimeException('Select a product.');
+    }
+    $st = $pdo->prepare("SELECT id, name, COALESCE(product_type,'medicine') AS product_type FROM medicines WHERE id=?");
+    $st->execute([$mid]);
+    $med = $st->fetch();
+    if (!$med) {
+        throw new RuntimeException('Product not found.');
+    }
+    $type = $med['product_type'];
+    $qty = (int)($post['quantity'] ?? ($existing['quantity'] ?? 0));
+    if ($qty <= 0) {
+        throw new RuntimeException('Quantity must be greater than 0.');
+    }
+    $batch = trim((string)($post['batch_number'] ?? ($existing['batch_number'] ?? '')));
+    if ($type === 'equipment' && $batch === '') {
+        $batch = nextInternalBatchNumber($pdo, 'EQP');
+    } elseif ($type === 'cosmetic' && $batch === '') {
+        $batch = nextInternalBatchNumber($pdo, 'COS');
+    }
+    if ($batch === '') {
+        throw new RuntimeException('Batch / reference number is required.');
+    }
+
+    $needExp = productRequiresExpiry($type);
+    $expiryRaw = array_key_exists('expiry_date', $post)
+        ? trim((string)$post['expiry_date'])
+        : trim((string)($existing['expiry_date'] ?? ''));
+    // Empty expiry on edit keeps existing; blank string from form means clear/no-expiry for non-medicines.
+    if ($expiryRaw === '' && $existing && !array_key_exists('expiry_date', $post)) {
+        $expiry = $existing['expiry_date'] ?? null;
+    } else {
+        $expiry = normalizeExpiryDate($expiryRaw, $needExp);
+    }
+    if ($needExp && (!$expiry || isNoExpiryDate($expiry))) {
+        throw new RuntimeException('Expiry date is required for medicines.');
+    }
+
+    $purchaseDate = trim((string)($post['purchase_date'] ?? '')) ?: businessToday();
+    if ($expiryRaw !== '' && $expiry && !isNoExpiryDate($expiry) && $expiry < $purchaseDate) {
+        throw new RuntimeException('Expiry date cannot be before the purchase date.');
+    }
+
+    $buy = (float)($post['purchase_price'] ?? ($existing['purchase_price'] ?? 0));
+    $sell = (float)($post['selling_price'] ?? ($existing['selling_price'] ?? 0));
+    if ($buy < 0 || $sell < 0) {
+        throw new RuntimeException('Prices cannot be negative.');
+    }
+    $mfg = trim((string)($post['manufacturing_date'] ?? ($existing['manufacturing_date'] ?? ''))) ?: null;
+    $variant = trim((string)($post['variant'] ?? ($existing['variant'] ?? '')));
+    $model = trim((string)($post['model_number'] ?? ($existing['model_number'] ?? '')));
+    $serial = trim((string)($post['serial_number'] ?? ($existing['serial_number'] ?? '')));
+    $amt = purchaseLineAmounts($qty, $buy, 0, 0);
+
+    return [
+        'medicine_id'        => $mid,
+        'medicine_name'      => $med['name'],
+        'product_type'       => $type,
+        'batch_number'       => $batch,
+        'manufacturing_date' => $mfg,
+        'expiry_date'        => $expiry,
+        'quantity'           => $qty,
+        'purchase_price'     => round($buy, 2),
+        'selling_price'      => round($sell, 2),
+        'line_total'         => $amt['total'],
+        'variant'            => $variant,
+        'model_number'       => $model,
+        'serial_number'      => $serial,
+    ];
+}
+
+/**
+ * Edit one product line on a purchase (separately from other lines).
+ * Draft/pending: full field edit. Received: full edit only if nothing sold from the batch;
+ * otherwise selling price only. Syncs linked batch stock when safe.
+ */
+function updatePurchaseItem(PDO $pdo, int $purchaseId, int $itemId, array $post): void {
+    $p = fetchPurchase($pdo, $purchaseId);
+    if (!$p) {
+        throw new RuntimeException('Purchase not found.');
+    }
+    if (($p['status'] ?? '') === 'cancelled') {
+        throw new RuntimeException('Cancelled purchases cannot be edited.');
+    }
+    $item = fetchPurchaseItem($pdo, $purchaseId, $itemId);
+    if (!$item) {
+        throw new RuntimeException('Product line not found on this purchase.');
+    }
+    if ((int)($item['returned_quantity'] ?? 0) > 0) {
+        throw new RuntimeException('Cannot edit a line that already has returns. Use a purchase return instead.');
+    }
+
+    $fields = normalizePurchaseItemInput($pdo, $post, $item);
+    $status = $p['status'] ?? '';
+    $batchId = !empty($item['batch_id']) ? (int)$item['batch_id'] : null;
+    $sold = $batchId ? batchSoldQty($pdo, $batchId) : 0;
+
+    $pdo->beginTransaction();
+    try {
+        if ($status === 'received' && $sold > 0) {
+            // Units already sold — only selling price may change (item + batch).
+            $sell = $fields['selling_price'];
+            if ($sell <= 0.009) {
+                throw new RuntimeException('Selling price is required.');
+            }
+            $pdo->prepare('UPDATE purchase_items SET selling_price=? WHERE id=? AND purchase_id=?')
+                ->execute([$sell, $itemId, $purchaseId]);
+            if ($batchId) {
+                $pdo->prepare('UPDATE batches SET selling_price=? WHERE id=?')->execute([$sell, $batchId]);
+            }
+            auditLog($pdo, 'update', 'purchase', $purchaseId, ($p['purchase_number'] ?? '') . " line #{$itemId} selling price updated (stock already sold)");
+            $pdo->commit();
+            return;
+        }
+
+        if ($status === 'received' && $batchId) {
+            $oldQty = (int)$item['quantity'];
+            $newQty = (int)$fields['quantity'];
+            $delta = $newQty - $oldQty;
+            $onHand = batchOnHandQty($pdo, $batchId);
+            if ($delta < 0 && -$delta > $onHand) {
+                throw new RuntimeException("Cannot reduce quantity by " . (-$delta) . ": only {$onHand} units remain in stock for this batch.");
+            }
+            $pdo->prepare("
+                UPDATE batches SET
+                    quantity = MAX(0, quantity + ?),
+                    quantity_received = MAX(0, COALESCE(quantity_received,0) + ?),
+                    purchase_price = ?,
+                    selling_price = ?,
+                    expiry_date = ?,
+                    manufacture_date = ?,
+                    batch_number = ?,
+                    variant = ?,
+                    model_number = ?,
+                    serial_number = ?,
+                    status = 'active'
+                WHERE id=?
+            ")->execute([
+                $delta, $delta,
+                $fields['purchase_price'], $fields['selling_price'],
+                $fields['expiry_date'], $fields['manufacturing_date'],
+                $fields['batch_number'],
+                $fields['variant'] ?: null, $fields['model_number'] ?: null, $fields['serial_number'] ?: null,
+                $batchId,
+            ]);
+        }
+
+        // Draft/pending (and received after stock sync): rewrite the line.
+        // Product (medicine_id) stays the same on received lines to avoid orphaning batches.
+        $medicineId = in_array($status, ['draft', 'pending_approval'], true)
+            ? $fields['medicine_id']
+            : (int)$item['medicine_id'];
+
+        $pdo->prepare("
+            UPDATE purchase_items SET
+                medicine_id=?, batch_number=?, manufacturing_date=?, expiry_date=?,
+                quantity=?, purchase_price=?, selling_price=?, line_total=?,
+                variant=?, model_number=?, serial_number=?
+            WHERE id=? AND purchase_id=?
+        ")->execute([
+            $medicineId,
+            $fields['batch_number'], $fields['manufacturing_date'], $fields['expiry_date'],
+            $fields['quantity'], $fields['purchase_price'], $fields['selling_price'], $fields['line_total'],
+            $fields['variant'] ?: null, $fields['model_number'] ?: null, $fields['serial_number'] ?: null,
+            $itemId, $purchaseId,
+        ]);
+
+        recalcPurchaseTotals($pdo, $purchaseId);
+        auditLog($pdo, 'update', 'purchase', $purchaseId, ($p['purchase_number'] ?? '') . " product \"{$fields['medicine_name']}\" updated");
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
+/**
+ * Delete one product line from a purchase (separately from other lines).
+ * Works even if the purchase has payments — totals are recalculated afterward.
+ * Draft/pending: remove row. Received: reverse unsold stock first.
+ * Last product: deletes the whole purchase (including its payment records).
+ */
+function deletePurchaseItem(PDO $pdo, int $purchaseId, int $itemId): void {
+    $p = fetchPurchase($pdo, $purchaseId);
+    if (!$p) {
+        throw new RuntimeException('Purchase not found.');
+    }
+    if (($p['status'] ?? '') === 'cancelled') {
+        throw new RuntimeException('Cancelled purchases cannot be edited.');
+    }
+    $item = fetchPurchaseItem($pdo, $purchaseId, $itemId);
+    if (!$item) {
+        throw new RuntimeException('Product line not found on this purchase.');
+    }
+    if ((int)($item['returned_quantity'] ?? 0) > 0) {
+        throw new RuntimeException('Cannot delete a line that already has returns. Clear the return first, or delete the whole purchase.');
+    }
+
+    $countSt = $pdo->prepare('SELECT COUNT(*) FROM purchase_items WHERE purchase_id=?');
+    $countSt->execute([$purchaseId]);
+    // Removing the last product deletes the whole purchase (payments removed with it).
+    if ((int)$countSt->fetchColumn() <= 1) {
+        deletePurchase($pdo, $purchaseId, true);
+        return;
+    }
+
+    $status = $p['status'] ?? '';
+    $batchId = !empty($item['batch_id']) ? (int)$item['batch_id'] : null;
+    $label = $item['med_name'] ?? ('line #' . $itemId);
+
+    $pdo->beginTransaction();
+    try {
+        if ($status === 'received') {
+            if (!$batchId) {
+                throw new RuntimeException('Cannot delete this received line: no linked stock batch.');
+            }
+            $sold = batchSoldQty($pdo, $batchId);
+            if ($sold > 0) {
+                throw new RuntimeException("Cannot delete \"{$label}\": {$sold} unit(s) already sold from this batch.");
+            }
+            $qty = (int)$item['quantity'];
+            $onHand = batchOnHandQty($pdo, $batchId);
+            $reverse = min($qty, $onHand);
+            if ($reverse > 0) {
+                $pdo->prepare('UPDATE batches SET quantity = MAX(0, quantity - ?), quantity_received = MAX(0, COALESCE(quantity_received,0) - ?) WHERE id=?')
+                    ->execute([$reverse, $reverse, $batchId]);
+            }
+        }
+
+        $pdo->prepare('DELETE FROM purchase_items WHERE id=? AND purchase_id=?')->execute([$itemId, $purchaseId]);
+        recalcPurchaseTotals($pdo, $purchaseId, true);
+        auditLog($pdo, 'update', 'purchase', $purchaseId, ($p['purchase_number'] ?? '') . " product \"{$label}\" removed");
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
+/**
+ * Add a product line to an existing draft/pending purchase.
+ * Received purchases: adds the line and immediately receives it into stock.
+ */
+function addPurchaseItem(PDO $pdo, int $purchaseId, array $post): int {
+    $p = fetchPurchase($pdo, $purchaseId);
+    if (!$p) {
+        throw new RuntimeException('Purchase not found.');
+    }
+    if (($p['status'] ?? '') === 'cancelled') {
+        throw new RuntimeException('Cannot add products to a cancelled purchase.');
+    }
+    $status = $p['status'] ?? '';
+    $fields = normalizePurchaseItemInput($pdo, array_merge($post, [
+        'purchase_date' => $p['purchase_date'] ?? businessToday(),
+    ]));
+
+    if ($status === 'received' && $fields['selling_price'] <= 0.009) {
+        throw new RuntimeException('Selling price is required when adding a product to a received purchase.');
+    }
+
+    $pdo->beginTransaction();
+    try {
+        $batchId = null;
+        if ($status === 'received') {
+            $batchId = receivePurchaseLine($pdo, $purchaseId, $p['supplier_id'] !== null ? (int)$p['supplier_id'] : null, $fields);
+        }
+        $pdo->prepare("
+            INSERT INTO purchase_items (
+                purchase_id, medicine_id, batch_id, batch_number, manufacturing_date, expiry_date,
+                quantity, free_quantity, purchase_price, selling_price, discount, tax, line_total,
+                variant, model_number, serial_number
+            ) VALUES (?,?,?,?,?,?,?,0,?,?,0,0,?,?,?,?)
+        ")->execute([
+            $purchaseId, $fields['medicine_id'], $batchId, $fields['batch_number'], $fields['manufacturing_date'],
+            $fields['expiry_date'], $fields['quantity'], $fields['purchase_price'], $fields['selling_price'],
+            $fields['line_total'], $fields['variant'] ?: null, $fields['model_number'] ?: null, $fields['serial_number'] ?: null,
+        ]);
+        $newId = (int)$pdo->lastInsertId();
+        recalcPurchaseTotals($pdo, $purchaseId);
+        auditLog($pdo, 'update', 'purchase', $purchaseId, ($p['purchase_number'] ?? '') . " product \"{$fields['medicine_name']}\" added");
+        $pdo->commit();
+        return $newId;
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
 function recordPurchasePayment(PDO $pdo, int $purchaseId, float $amount, string $method, string $date, string $reference, int $userId, string $notes = '', bool $ownTransaction = true): void {
     $p = fetchPurchase($pdo, $purchaseId);
     if (!$p) throw new RuntimeException('Purchase not found.');
@@ -751,45 +1137,98 @@ function cancelPurchase(PDO $pdo, int $purchaseId, int $userId): void {
 }
 
 /** Reasons why a purchase cannot be deleted (empty = safe to delete). */
-function purchaseDeleteBlockers(array $p): array {
+function purchaseDeleteBlockers(PDO $pdo, array $p): array {
     $reasons = [];
     $status = $p['status'] ?? '';
-    if ((float)($p['total_paid'] ?? 0) > 0.009) {
-        $reasons[] = 'This purchase has payments recorded. Cancel it instead so the payment history stays intact.';
-    }
-    if ((float)($p['total_returned'] ?? 0) > 0.009) {
-        $reasons[] = 'This purchase has returns recorded and cannot be deleted.';
-    }
-    // Received purchases touched inventory: deleting would silently erase stock
-    // that may already be sold, batch-priced or reported. Cancel reverses safely.
-    if ($status === 'received' && !empty($p['received_at'])) {
-        $reasons[] = 'Received purchases are already in inventory and cannot be deleted. Cancel the purchase instead.';
-    }
     if ($status === 'cancelled') {
         $reasons[] = 'Cancelled purchases are kept for audit purposes and cannot be deleted.';
+        return $reasons;
+    }
+    // Payments/returns are NOT blockers — delete removes those records too.
+    // Only block when stock from this purchase has already been sold.
+    if ($status === 'received') {
+        $items = fetchPurchaseItems($pdo, (int)$p['id']);
+        foreach ($items as $it) {
+            $qty = (int)$it['quantity'] - (int)($it['returned_quantity'] ?? 0);
+            if ($qty <= 0 || empty($it['batch_id'])) {
+                continue;
+            }
+            $batchId = (int)$it['batch_id'];
+            $sold = batchSoldQty($pdo, $batchId);
+            if ($sold > 0) {
+                $label = $it['med_name'] ?? 'a product';
+                $reasons[] = "Cannot delete: units of \"{$label}\" have already been sold from this purchase.";
+                break;
+            }
+            // Missing on-hand stock (without sales) is OK — we reverse whatever remains.
+        }
     }
     return $reasons;
 }
 
-/** Permanently remove a draft/pending purchase that never touched inventory. */
-function deletePurchase(PDO $pdo, int $purchaseId): void {
+/** Confirm dialog text for deleting a purchase (mentions payments when present). */
+function purchaseDeleteConfirmMessage(array $p): string {
+    $bits = ['Delete this purchase permanently?'];
+    if (($p['status'] ?? '') === 'received') {
+        $bits[] = 'Stock will be reversed.';
+    }
+    if ((float)($p['total_paid'] ?? 0) > 0.009) {
+        $bits[] = 'All payment records on this invoice will also be deleted.';
+    }
+    if ((float)($p['total_returned'] ?? 0) > 0.009) {
+        $bits[] = 'Return records will also be deleted.';
+    }
+    $bits[] = 'This cannot be undone.';
+    return implode(' ', $bits);
+}
+
+/**
+ * Permanently delete a purchase.
+ * Reverses unsold received stock, then removes items, payments, returns and the invoice.
+ */
+function deletePurchase(PDO $pdo, int $purchaseId, bool $force = false): void {
     $p = fetchPurchase($pdo, $purchaseId);
     if (!$p) throw new RuntimeException('Purchase not found.');
-    $reasons = purchaseDeleteBlockers($p);
+    $reasons = purchaseDeleteBlockers($pdo, $p);
     if ($reasons) {
         throw new RuntimeException($reasons[0]);
     }
     $pdo->beginTransaction();
     try {
-        // purchase_payments / purchase_returns are guarded by the blockers above;
-        // purchase_items cascade. Reap stray child rows first for old databases
-        // where the FK cascade may not exist yet.
-        $pdo->prepare("DELETE FROM purchase_payments WHERE purchase_id=?")->execute([$purchaseId]);
-        $pdo->prepare("DELETE FROM purchase_returns WHERE purchase_id=?")->execute([$purchaseId]);
-        $pdo->prepare("DELETE FROM purchase_return_items WHERE return_id NOT IN (SELECT id FROM purchase_returns)")->execute();
-        $pdo->prepare("DELETE FROM purchase_items WHERE purchase_id=?")->execute([$purchaseId]);
-        $pdo->prepare("DELETE FROM purchases WHERE id=?")->execute([$purchaseId]);
-        auditLog($pdo, 'delete', 'purchase', $purchaseId, ($p['purchase_number'] ?: $p['reference']) . ' ' . currency((float)($p['grand_total'] ?? $p['total_amount'] ?? 0)));
+        if (($p['status'] ?? '') === 'received') {
+            $items = fetchPurchaseItems($pdo, $purchaseId);
+            foreach ($items as $it) {
+                $qty = (int)$it['quantity'] - (int)($it['returned_quantity'] ?? 0);
+                if ($qty > 0 && !empty($it['batch_id'])) {
+                    $batchId = (int)$it['batch_id'];
+                    if (batchSoldQty($pdo, $batchId) > 0) {
+                        throw new RuntimeException('Cannot delete this purchase: some units have already been sold.');
+                    }
+                    $onHand = batchOnHandQty($pdo, $batchId);
+                    $reverse = min($qty, $onHand);
+                    if ($reverse > 0) {
+                        $pdo->prepare('UPDATE batches SET quantity = MAX(0, quantity - ?), quantity_received = MAX(0, COALESCE(quantity_received,0) - ?) WHERE id=?')
+                            ->execute([$reverse, $reverse, $batchId]);
+                    }
+                }
+            }
+        }
+        $pdo->prepare("
+            DELETE FROM purchase_return_items
+            WHERE return_id IN (SELECT id FROM purchase_returns WHERE purchase_id=?)
+        ")->execute([$purchaseId]);
+        $pdo->prepare('DELETE FROM purchase_returns WHERE purchase_id=?')->execute([$purchaseId]);
+        $pdo->prepare('DELETE FROM purchase_payments WHERE purchase_id=?')->execute([$purchaseId]);
+        $pdo->prepare('DELETE FROM purchase_items WHERE purchase_id=?')->execute([$purchaseId]);
+        $pdo->prepare('DELETE FROM purchases WHERE id=?')->execute([$purchaseId]);
+        $note = ($p['purchase_number'] ?: $p['reference']) . ' ' . currency((float)($p['grand_total'] ?? $p['total_amount'] ?? 0));
+        if ($force) {
+            $note .= ' (via last product delete)';
+        }
+        if ((float)($p['total_paid'] ?? 0) > 0.009) {
+            $note .= ' · payments removed';
+        }
+        auditLog($pdo, 'delete', 'purchase', $purchaseId, $note);
         $pdo->commit();
     } catch (Throwable $e) {
         $pdo->rollBack();

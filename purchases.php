@@ -80,6 +80,40 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: purchases.php?action=view&id=' . (int)$_POST['id']);
             exit;
         }
+        if ($act === 'update_header') {
+            updatePurchaseHeader($pdo, (int)$_POST['id'], $_POST);
+            flashSet('success', 'Purchase details updated.');
+            header('Location: purchases.php?action=view&id=' . (int)$_POST['id']);
+            exit;
+        }
+        if ($act === 'update_item') {
+            updatePurchaseItem($pdo, (int)$_POST['id'], (int)($_POST['item_id'] ?? 0), $_POST);
+            flashSet('success', 'Product line updated.');
+            header('Location: purchases.php?action=view&id=' . (int)$_POST['id']);
+            exit;
+        }
+        if ($act === 'delete_item') {
+            $pid = (int)$_POST['id'];
+            $itemId = (int)($_POST['item_id'] ?? 0);
+            $cst = $pdo->prepare('SELECT COUNT(*) FROM purchase_items WHERE purchase_id=?');
+            $cst->execute([$pid]);
+            $beforeCount = (int)$cst->fetchColumn();
+            deletePurchaseItem($pdo, $pid, $itemId);
+            if ($beforeCount <= 1) {
+                flashSet('success', 'Last product removed — purchase deleted.');
+                header('Location: purchases.php');
+            } else {
+                flashSet('success', 'Product removed from this purchase.');
+                header('Location: purchases.php?action=view&id=' . $pid);
+            }
+            exit;
+        }
+        if ($act === 'add_item') {
+            addPurchaseItem($pdo, (int)$_POST['id'], $_POST);
+            flashSet('success', 'Product added to this purchase.');
+            header('Location: purchases.php?action=view&id=' . (int)$_POST['id']);
+            exit;
+        }
         if ($act === 'pay') {
             recordPurchasePayment(
                 $pdo,
@@ -116,7 +150,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     } catch (Throwable $e) {
         $error = $e->getMessage();
         if ($act === 'save_purchase') $action = 'add';
-        elseif (in_array($act, ['pay', 'return', 'receive', 'save_draft_edit', 'cancel', 'delete'], true)) {
+        elseif (in_array($act, ['pay', 'return', 'receive', 'save_draft_edit', 'update_header', 'update_item', 'delete_item', 'add_item', 'cancel', 'delete'], true)) {
             $action = 'view';
             $id = (int)($_POST['id'] ?? $id);
         }
@@ -1268,6 +1302,9 @@ recalc();
   <?php endif; ?>
   <?php if (can('purchases.manage')): ?>
   <div class="form-actions" style="padding-top:8px;">
+    <?php if ($purchase['status'] !== 'cancelled'): ?>
+    <button type="button" class="btn btn-ghost" onclick="openModal('editHeaderModal')"><i data-lucide="pencil"></i> Edit Purchase</button>
+    <?php endif; ?>
     <?php if ($isDraft && !$needsReview): ?>
     <form method="POST"><input type="hidden" name="act" value="receive"><input type="hidden" name="id" value="<?= $purchase['id'] ?>">
       <button class="btn btn-success">Receive into Inventory</button></form>
@@ -1295,13 +1332,31 @@ recalc();
       <button class="btn btn-danger">Cancel Purchase</button>
     </form>
     <?php endif; ?>
+    <?php
+    $deleteBlockers = purchaseDeleteBlockers($pdo, $purchase);
+    if ($purchase['status'] !== 'cancelled'):
+      $delConfirm = htmlspecialchars(purchaseDeleteConfirmMessage($purchase), ENT_QUOTES);
+    ?>
+    <?php if (!$deleteBlockers): ?>
+    <form method="POST" onsubmit="return confirm('<?= $delConfirm ?>')">
+      <input type="hidden" name="act" value="delete"><input type="hidden" name="id" value="<?= $purchase['id'] ?>">
+      <button type="submit" class="btn btn-danger">Delete Purchase</button>
+    </form>
+    <?php else: ?>
+    <button type="button" class="btn btn-danger" disabled title="<?= htmlspecialchars($deleteBlockers[0]) ?>">Delete Purchase</button>
+    <?php endif; ?>
+    <?php endif; ?>
   </div>
   <?php endif; ?>
 </div>
 
 <div class="card mb-20">
-  <div class="card-header"><span class="card-title">Purchased Products</span></div>
-  <?php if ($isDraft): ?><form method="POST" id="draftReviewForm"><input type="hidden" name="id" value="<?= $purchase['id'] ?>"><?php endif; ?>
+  <div class="card-header">
+    <span class="card-title">Purchased Products</span>
+    <?php if (can('purchases.manage') && $purchase['status'] !== 'cancelled'): ?>
+    <button type="button" class="btn btn-primary btn-sm" onclick="openModal('addItemModal')"><i data-lucide="plus"></i> Add Product</button>
+    <?php endif; ?>
+  </div>
   <div class="table-wrap">
     <table>
       <thead>
@@ -1318,6 +1373,7 @@ recalc();
           <th>Buy</th>
           <th>Sell <?= $isDraft ? '<span style="font-weight:400;color:var(--text-300);">(owner)</span>' : '' ?></th>
           <th>Total</th>
+          <?php if (can('purchases.manage') && $purchase['status'] !== 'cancelled'): ?><th>Actions</th><?php endif; ?>
         </tr>
       </thead>
       <tbody>
@@ -1327,6 +1383,8 @@ recalc();
         $variantInfo = trim(implode(' · ', array_filter([
             $it['variant'] ?? '', $it['model_number'] ?? '', $it['serial_number'] ?? '',
         ], fn($v) => $v !== '' && $v !== null)));
+        $canEditLine = can('purchases.manage') && $purchase['status'] !== 'cancelled' && (int)($it['returned_quantity'] ?? 0) === 0;
+        $lineSold = !empty($it['batch_id']) ? batchSoldQty($pdo, (int)$it['batch_id']) : 0;
       ?>
       <tr>
         <td style="font-weight:600;"><?= htmlspecialchars($it['med_name']) ?><br><small style="font-weight:400;color:var(--text-300);"><?= htmlspecialchars($itTypeLabel) ?></small></td>
@@ -1343,22 +1401,62 @@ recalc();
           $sellVal = number_format((float)$it['selling_price'], 2, '.', '');
           $sellPending = (float)$it['selling_price'] <= 0.009;
         ?>
-        <td><input type="number" name="selling_price[<?= (int)$it['id'] ?>]" min="0" step="0.01" value="<?= htmlspecialchars($sellVal) ?>" style="<?= inputStyle(120) . ($sellPending ? 'background:var(--warning-glow);border-color:rgba(217,119,6,0.4);' : '') ?>" placeholder="0.00"></td>
+        <td><input type="number" form="draftReviewForm" name="selling_price[<?= (int)$it['id'] ?>]" min="0" step="0.01" value="<?= htmlspecialchars($sellVal) ?>" style="<?= inputStyle(120) . ($sellPending ? 'background:var(--warning-glow);border-color:rgba(217,119,6,0.4);' : '') ?>" placeholder="0.00"></td>
         <?php else: ?>
         <td><?= currency((float)$it['selling_price']) ?></td>
         <?php endif; ?>
         <td style="font-weight:700;"><?= currency((float)($it['line_total'] ?: $it['quantity'] * $it['purchase_price'])) ?></td>
+        <?php if (can('purchases.manage') && $purchase['status'] !== 'cancelled'): ?>
+        <td>
+          <div class="row-actions">
+            <?php if ($canEditLine): ?>
+            <button type="button" class="btn btn-ghost btn-sm"
+              onclick='openEditItemModal(<?= json_encode([
+                  'id' => (int)$it['id'],
+                  'medicine_id' => (int)$it['medicine_id'],
+                  'med_name' => $it['med_name'],
+                  'product_type' => $itType,
+                  'batch_number' => $it['batch_number'],
+                  'manufacturing_date' => $it['manufacturing_date'] ?? '',
+                  'expiry_date' => (!empty($it['expiry_date']) && !isNoExpiryDate($it['expiry_date'])) ? $it['expiry_date'] : '',
+                  'quantity' => (int)$it['quantity'],
+                  'purchase_price' => (float)$it['purchase_price'],
+                  'selling_price' => (float)$it['selling_price'],
+                  'variant' => $it['variant'] ?? '',
+                  'model_number' => $it['model_number'] ?? '',
+                  'serial_number' => $it['serial_number'] ?? '',
+                  'sold' => (int)$lineSold,
+                  'is_draft' => $isDraft,
+              ], JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_AMP | JSON_UNESCAPED_UNICODE) ?>)'>Edit</button>
+            <?php if ($lineSold <= 0): ?>
+            <form method="POST" class="row-action-form" onsubmit="return confirm('<?= count($items) <= 1
+                ? 'This is the last product — the whole purchase will be deleted. Continue?'
+                : ('Remove this product from the purchase?' . ($purchase['status'] === 'received' ? ' Stock will be reversed.' : '')) ?>')">
+              <input type="hidden" name="act" value="delete_item">
+              <input type="hidden" name="id" value="<?= (int)$purchase['id'] ?>">
+              <input type="hidden" name="item_id" value="<?= (int)$it['id'] ?>">
+              <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+            </form>
+            <?php else: ?>
+            <button type="button" class="btn btn-danger btn-sm" disabled title="Cannot delete — units already sold">Delete</button>
+            <?php endif; ?>
+            <?php endif; ?>
+          </div>
+        </td>
+        <?php endif; ?>
       </tr>
       <?php endforeach; ?>
       </tbody>
     </table>
   </div>
   <?php if ($isDraft): ?>
-  <div class="form-actions" style="padding:12px 16px;border-top:1px solid var(--border);">
-    <button type="submit" name="act" value="save_draft_edit" class="btn btn-primary">Save Selling Prices</button>
-    <button type="submit" name="act" value="receive" class="btn btn-success">Save &amp; Receive</button>
-    <span style="font-size:12px;color:var(--text-300);">Save keeps the draft for later. Save &amp; Receive validates all required information and updates inventory.</span>
-  </div>
+  <form method="POST" id="draftReviewForm">
+    <input type="hidden" name="id" value="<?= $purchase['id'] ?>">
+    <div class="form-actions" style="padding:12px 16px;border-top:1px solid var(--border);">
+      <button type="submit" name="act" value="save_draft_edit" class="btn btn-primary">Save Selling Prices</button>
+      <button type="submit" name="act" value="receive" class="btn btn-success">Save &amp; Receive</button>
+      <span style="font-size:12px;color:var(--text-300);">Save keeps the draft for later. Save &amp; Receive validates all required information and updates inventory.</span>
+    </div>
   </form>
   <?php endif; ?>
   <div class="report-summary-grid" style="margin-top:16px;">
@@ -1415,6 +1513,220 @@ recalc();
   </div>
 </div>
 <?php endif; ?>
+
+<div class="modal-overlay" id="editHeaderModal">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header"><h2>Edit Purchase</h2><button class="modal-close" onclick="closeModal('editHeaderModal')"><i data-lucide="x"></i></button></div>
+    <div class="modal-body">
+      <form method="POST">
+        <input type="hidden" name="act" value="update_header">
+        <input type="hidden" name="id" value="<?= (int)$purchase['id'] ?>">
+        <div class="form-group"><label>Supplier</label>
+          <select name="supplier_id">
+            <option value="">No supplier / Walk-in</option>
+            <?php foreach ($suppliers as $s): ?>
+            <option value="<?= (int)$s['id'] ?>" <?= (int)($purchase['supplier_id'] ?? 0) === (int)$s['id'] ? 'selected' : '' ?>><?= htmlspecialchars($s['name']) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <div class="form-group"><label>Purchase Date</label>
+          <input type="date" name="purchase_date" value="<?= htmlspecialchars($purchase['purchase_date'] ?: businessToday()) ?>" required>
+        </div>
+        <div class="form-group"><label>Payment Terms</label>
+          <select name="payment_terms">
+            <?php foreach (supplierPaymentTerms() as $k => $lbl): ?>
+            <option value="<?= $k ?>" <?= ($purchase['payment_terms'] ?? '') === $k ? 'selected' : '' ?>><?= htmlspecialchars($lbl) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <div class="form-group"><label>Due Date</label>
+          <input type="date" name="due_date" value="<?= htmlspecialchars($purchase['due_date'] ?? '') ?>">
+        </div>
+        <div class="form-group"><label>Reference</label>
+          <input type="text" name="reference" value="<?= htmlspecialchars($purchase['reference'] ?? '') ?>">
+        </div>
+        <div class="form-group"><label>Warehouse / Store</label>
+          <input type="text" name="warehouse" value="<?= htmlspecialchars($purchase['warehouse'] ?: 'Main Store') ?>">
+        </div>
+        <div class="form-group"><label>Invoice Discount</label>
+          <input type="number" name="header_discount" min="0" step="0.01" value="<?= number_format((float)($purchase['discount'] ?? 0), 2, '.', '') ?>">
+        </div>
+        <div class="form-group"><label>Tax</label>
+          <input type="number" name="header_tax" min="0" step="0.01" value="<?= number_format((float)($purchase['tax'] ?? 0), 2, '.', '') ?>">
+        </div>
+        <div class="form-group"><label>Notes</label>
+          <textarea name="notes"><?= htmlspecialchars($purchase['notes'] ?? '') ?></textarea>
+        </div>
+        <div class="form-actions">
+          <button class="btn btn-primary">Save Changes</button>
+          <button type="button" class="btn btn-ghost" onclick="closeModal('editHeaderModal')">Close</button>
+        </div>
+      </form>
+      <?php
+      $modalDeleteBlockers = purchaseDeleteBlockers($pdo, $purchase);
+      $modalDelConfirm = htmlspecialchars(purchaseDeleteConfirmMessage($purchase), ENT_QUOTES);
+      if (!$modalDeleteBlockers):
+      ?>
+      <form method="POST" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);" onsubmit="return confirm('<?= $modalDelConfirm ?>')">
+        <input type="hidden" name="act" value="delete">
+        <input type="hidden" name="id" value="<?= (int)$purchase['id'] ?>">
+        <button type="submit" class="btn btn-danger" style="width:100%;">Delete Purchase</button>
+      </form>
+      <?php else: ?>
+      <p style="margin-top:12px;font-size:12px;color:var(--text-300);"><?= htmlspecialchars($modalDeleteBlockers[0]) ?></p>
+      <?php endif; ?>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="editItemModal">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header"><h2>Edit Product</h2><button class="modal-close" onclick="closeModal('editItemModal')"><i data-lucide="x"></i></button></div>
+    <div class="modal-body">
+      <form method="POST" id="editItemForm">
+        <input type="hidden" name="act" value="update_item">
+        <input type="hidden" name="id" value="<?= (int)$purchase['id'] ?>">
+        <input type="hidden" name="item_id" id="editItemId" value="">
+        <input type="hidden" name="medicine_id" id="editMedicineId" value="">
+        <p id="editItemSoldNote" style="display:none;font-size:12px;color:var(--warning);margin-bottom:10px;">Some units from this batch were already sold — only the selling price can be changed.</p>
+        <div class="form-group"><label>Product</label>
+          <input type="text" id="editMedName" value="" disabled>
+        </div>
+        <div class="form-group" id="editMedicineSelectWrap" style="display:none;"><label>Change Product</label>
+          <select id="editMedicineSelect" onchange="document.getElementById('editMedicineId').value=this.value; document.getElementById('editMedName').value=this.options[this.selectedIndex].text;">
+            <?php foreach ($medicines as $m): ?>
+            <option value="<?= (int)$m['id'] ?>"><?= htmlspecialchars($m['name']) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <div class="form-group"><label>Batch / Reference</label><input type="text" name="batch_number" id="editBatch" required></div>
+        <div class="form-group"><label>Manufacturing Date</label><input type="date" name="manufacturing_date" id="editMfg"></div>
+        <div class="form-group"><label>Expiry Date</label><input type="date" name="expiry_date" id="editExpiry"></div>
+        <div class="form-group"><label>Quantity</label><input type="number" name="quantity" id="editQty" min="1" step="1" required></div>
+        <div class="form-group"><label>Purchase Price</label><input type="number" name="purchase_price" id="editBuy" min="0" step="0.01" required></div>
+        <div class="form-group"><label>Selling Price</label><input type="number" name="selling_price" id="editSell" min="0" step="0.01"></div>
+        <div class="form-group"><label>Variant</label><input type="text" name="variant" id="editVariant"></div>
+        <div class="form-group"><label>Model Number</label><input type="text" name="model_number" id="editModel"></div>
+        <div class="form-group"><label>Serial Number</label><input type="text" name="serial_number" id="editSerial"></div>
+        <div class="form-actions">
+          <button class="btn btn-primary">Update Product</button>
+          <button type="button" class="btn btn-ghost" onclick="closeModal('editItemModal')">Close</button>
+        </div>
+      </form>
+      <form method="POST" id="editItemDeleteForm" style="margin-top:12px;padding-top:12px;border-top:1px solid var(--border);display:none;" onsubmit="return confirm(document.getElementById('editItemDeleteConfirm').value)">
+        <input type="hidden" name="act" value="delete_item">
+        <input type="hidden" name="id" value="<?= (int)$purchase['id'] ?>">
+        <input type="hidden" name="item_id" id="editItemDeleteId" value="">
+        <input type="hidden" id="editItemDeleteConfirm" value="Remove this product from the purchase?">
+        <button type="submit" class="btn btn-danger" style="width:100%;">Delete Product</button>
+      </form>
+      <p id="editItemDeleteBlocked" style="display:none;margin-top:12px;font-size:12px;color:var(--text-300);">Cannot delete — units from this batch were already sold.</p>
+    </div>
+  </div>
+</div>
+
+<div class="modal-overlay" id="addItemModal">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header"><h2>Add Product</h2><button class="modal-close" onclick="closeModal('addItemModal')"><i data-lucide="x"></i></button></div>
+    <div class="modal-body">
+      <form method="POST">
+        <input type="hidden" name="act" value="add_item">
+        <input type="hidden" name="id" value="<?= (int)$purchase['id'] ?>">
+        <div class="form-group"><label>Product</label>
+          <input type="text" list="addItemProductList" id="addItemProductQ" placeholder="Type to search…" autocomplete="off" required
+                 onchange="syncAddItemProduct()" oninput="syncAddItemProduct()">
+          <input type="hidden" name="medicine_id" id="addItemMedicineId" value="">
+          <datalist id="addItemProductList">
+            <?php foreach ($medicines as $m): ?>
+            <option value="<?= htmlspecialchars($m['name'] . ($m['generic_name'] ? ' — ' . $m['generic_name'] : '')) ?>" data-id="<?= (int)$m['id'] ?>"></option>
+            <?php endforeach; ?>
+          </datalist>
+        </div>
+        <div class="form-group"><label>Batch / Reference</label><input type="text" name="batch_number" placeholder="Required for medicines"></div>
+        <div class="form-group"><label>Manufacturing Date</label><input type="date" name="manufacturing_date"></div>
+        <div class="form-group"><label>Expiry Date</label><input type="date" name="expiry_date"></div>
+        <div class="form-group"><label>Quantity</label><input type="number" name="quantity" min="1" step="1" value="1" required></div>
+        <div class="form-group"><label>Purchase Price</label><input type="number" name="purchase_price" min="0" step="0.01" value="0" required></div>
+        <div class="form-group"><label>Selling Price</label><input type="number" name="selling_price" min="0" step="0.01" value="0" <?= $purchase['status'] === 'received' ? 'required' : '' ?>></div>
+        <div class="form-group"><label>Variant</label><input type="text" name="variant"></div>
+        <div class="form-group"><label>Model Number</label><input type="text" name="model_number"></div>
+        <div class="form-group"><label>Serial Number</label><input type="text" name="serial_number"></div>
+        <div class="form-actions">
+          <button class="btn btn-primary" onclick="return !!document.getElementById('addItemMedicineId').value || (alert('Select a product from the list.'), false)">Add Product</button>
+          <button type="button" class="btn btn-ghost" onclick="closeModal('addItemModal')">Close</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<script>
+const ADD_ITEM_PRODUCTS = <?= json_encode(array_map(fn($m) => [
+    'id' => (int)$m['id'],
+    'label' => $m['name'] . (!empty($m['generic_name']) ? ' — ' . $m['generic_name'] : ''),
+    'name' => $m['name'],
+], $medicines), JSON_UNESCAPED_UNICODE) ?>;
+
+function syncAddItemProduct() {
+  const q = (document.getElementById('addItemProductQ').value || '').trim().toLowerCase();
+  const hit = ADD_ITEM_PRODUCTS.find(p => p.label.toLowerCase() === q || p.name.toLowerCase() === q);
+  document.getElementById('addItemMedicineId').value = hit ? hit.id : '';
+}
+
+function openEditItemModal(data) {
+  document.getElementById('editItemId').value = data.id;
+  document.getElementById('editMedicineId').value = data.medicine_id;
+  document.getElementById('editMedName').value = data.med_name;
+  document.getElementById('editBatch').value = data.batch_number || '';
+  document.getElementById('editMfg').value = data.manufacturing_date || '';
+  document.getElementById('editExpiry').value = data.expiry_date || '';
+  document.getElementById('editQty').value = data.quantity || 1;
+  document.getElementById('editBuy').value = Number(data.purchase_price || 0).toFixed(2);
+  document.getElementById('editSell').value = Number(data.selling_price || 0).toFixed(2);
+  document.getElementById('editVariant').value = data.variant || '';
+  document.getElementById('editModel').value = data.model_number || '';
+  document.getElementById('editSerial').value = data.serial_number || '';
+
+  const soldLocked = !data.is_draft && (data.sold || 0) > 0;
+  document.getElementById('editItemSoldNote').style.display = soldLocked ? 'block' : 'none';
+  ['editBatch','editMfg','editExpiry','editQty','editBuy','editVariant','editModel','editSerial'].forEach(id => {
+    document.getElementById(id).disabled = soldLocked;
+  });
+  document.getElementById('editSell').disabled = false;
+  document.getElementById('editMedicineSelectWrap').style.display = data.is_draft ? 'block' : 'none';
+  if (data.is_draft) {
+    document.getElementById('editMedicineSelect').value = String(data.medicine_id);
+  }
+
+  const delForm = document.getElementById('editItemDeleteForm');
+  const delBlocked = document.getElementById('editItemDeleteBlocked');
+  if (soldLocked) {
+    delForm.style.display = 'none';
+    delBlocked.style.display = 'block';
+  } else {
+    document.getElementById('editItemDeleteId').value = data.id;
+    const last = <?= (int)count($items) ?> <= 1;
+    document.getElementById('editItemDeleteConfirm').value = last
+      ? 'This is the last product — the whole purchase will be deleted. Continue?'
+      : ('Remove this product from the purchase?' + (<?= $purchase['status'] === 'received' ? 'true' : 'false' ?> ? ' Stock will be reversed.' : ''));
+    delForm.style.display = 'block';
+    delBlocked.style.display = 'none';
+  }
+
+  openModal('editItemModal');
+}
+
+// Open header edit modal when arriving from list "Edit" link.
+if (sessionStorage.getItem('openPurchaseEdit') === '1') {
+  sessionStorage.removeItem('openPurchaseEdit');
+  openModal('editHeaderModal');
+}
+
+// Ensure disabled edit fields are re-enabled before submit so values post.
+document.getElementById('editItemForm')?.addEventListener('submit', function () {
+  this.querySelectorAll('[disabled]').forEach(el => { el.disabled = false; });
+});
+</script>
 
 <div class="modal-overlay" id="payModal">
   <div class="modal" style="max-width:440px;">
@@ -1566,14 +1878,23 @@ recalc();
         <td>
           <div class="row-actions">
             <a href="purchases.php?action=view&id=<?= $p['id'] ?>" class="btn btn-ghost btn-sm">View</a>
-            <a href="purchase_invoice.php?id=<?= $p['id'] ?>" class="btn btn-ghost btn-sm">Print</a>
-            <?php if (!purchaseDeleteBlockers($p)): ?>
-            <form method="POST" class="row-action-form" onsubmit="return confirm('Delete this purchase permanently? This cannot be undone.')">
+            <?php if (can('purchases.manage') && ($p['status'] ?? '') !== 'cancelled'): ?>
+            <a href="purchases.php?action=view&id=<?= $p['id'] ?>#editHeaderModal" class="btn btn-ghost btn-sm" onclick="sessionStorage.setItem('openPurchaseEdit','1')">Edit</a>
+            <?php
+              $listDeleteBlockers = purchaseDeleteBlockers($pdo, $p);
+              $listDelConfirm = htmlspecialchars(purchaseDeleteConfirmMessage($p), ENT_QUOTES);
+              if (!$listDeleteBlockers):
+            ?>
+            <form method="POST" class="row-action-form" onsubmit="return confirm('<?= $listDelConfirm ?>')">
               <input type="hidden" name="act" value="delete">
               <input type="hidden" name="id" value="<?= (int)$p['id'] ?>">
               <button type="submit" class="btn btn-danger btn-sm">Delete</button>
             </form>
+            <?php else: ?>
+            <button type="button" class="btn btn-danger btn-sm" disabled title="<?= htmlspecialchars($listDeleteBlockers[0]) ?>">Delete</button>
             <?php endif; ?>
+            <?php endif; ?>
+            <a href="purchase_invoice.php?id=<?= $p['id'] ?>" class="btn btn-ghost btn-sm">Print</a>
           </div>
         </td>
       </tr>
