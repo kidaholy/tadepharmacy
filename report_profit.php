@@ -29,8 +29,8 @@ $profitByCat = $pdo->prepare("
     SELECT COALESCE(c.name,'Uncategorized') AS category,
            COALESCE(m.product_type, c.product_type, '') AS mtype,
            SUM(si.subtotal) AS revenue,
-           SUM(si.quantity * b.purchase_price) AS cogs,
-           SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS gross_profit
+           SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS cogs,
+           SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS gross_profit
     FROM sale_items si
     {$itemCtx['joins']}
     LEFT JOIN categories c ON c.id = m.category_id
@@ -53,8 +53,8 @@ foreach ($profitByCat as $c) {
 $dailyProfit = $pdo->prepare("
     SELECT " . reportLocalDateExpr('s') . " AS day,
            SUM(si.subtotal) AS revenue,
-           SUM(si.quantity * b.purchase_price) AS cogs,
-           SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS gross
+           SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS cogs,
+           SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS gross
     FROM sale_items si
     {$itemCtx['joins']}
     WHERE {$itemCtx['where']}

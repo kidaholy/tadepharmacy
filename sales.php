@@ -38,7 +38,7 @@ if ($q !== '') {
             SELECT si.sale_id FROM sale_items si
             JOIN medicines m ON m.id = si.medicine_id
             LEFT JOIN batches b ON b.id = si.batch_id
-            WHERE m.name LIKE ? OR m.generic_name LIKE ? OR b.batch_number LIKE ?
+            WHERE m.name LIKE ? OR m.generic_name LIKE ? OR COALESCE(b.batch_number, si.batch_number) LIKE ?
         ))";
     for ($i = 0; $i < 6; $i++) $params[] = "%$q%";
 }

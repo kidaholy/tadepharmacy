@@ -114,12 +114,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 ]);
                 $saleId = (int)$pdo->lastInsertId();
 
-                $insItem  = $pdo->prepare("INSERT INTO sale_items (sale_id, medicine_id, batch_id, quantity, unit_price, discount, tax, subtotal) VALUES (?,?,?,?,?,?,?,?)");
+                // cost_price / batch_number are snapshotted so history stays intact
+                // even if the batch is later edited or deleted.
+                $insItem  = $pdo->prepare("INSERT INTO sale_items (sale_id, medicine_id, batch_id, quantity, unit_price, discount, tax, subtotal, cost_price, batch_number) VALUES (?,?,?,?,?,?,?,?,?,?)");
                 $updBatch = $pdo->prepare("UPDATE batches SET quantity = quantity - ? WHERE id = ?");
                 foreach ($lineItems as $li) {
                     $insItem->execute([
                         $saleId, $li['medicine_id'], $li['batch_id'], $li['qty'],
                         $li['price'], $li['discount'], $li['tax'], $li['subtotal'],
+                        $li['cost_price'] ?? null, $li['batch_number'] ?? null,
                     ]);
                     $updBatch->execute([$li['qty'], $li['batch_id']]);
                     checkStockAlerts($pdo, $li['medicine_id']);

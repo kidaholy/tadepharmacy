@@ -14,10 +14,11 @@ $sale = $s->fetch();
 if (!$sale) { header('Location: sales.php'); exit; }
 
 $items = $pdo->prepare("
-    SELECT si.*, m.name, m.unit, b.batch_number
+    SELECT si.*, m.name, m.unit,
+           COALESCE(b.batch_number, si.batch_number, CONCAT('Item #', si.id)) AS batch_number
     FROM sale_items si
     JOIN medicines m ON m.id = si.medicine_id
-    JOIN batches b ON b.id = si.batch_id
+    LEFT JOIN batches b ON b.id = si.batch_id
     WHERE si.sale_id = ?
 ");
 $items->execute([$id]);
@@ -49,7 +50,7 @@ $change          = (float)$sale['paid_amount'] - $netTotal;
 $autoprint = ($_GET['autoprint'] ?? '0') === '1';
 $backToPos = ($_GET['back'] ?? '') === 'pos';
 
-renderHead('Receipt #' . $sale['invoice_number']);
+renderHead('Receipt #' . $sale['invoice_number'], 'print-80mm');
 renderSidebar();
 ?>
 <div id="sidebarOverlay" class="overlay-bg" onclick="toggleSidebar()"></div>

@@ -2109,8 +2109,14 @@ code {
 }
 
 @media print {
-  @page { size: A4 portrait; margin: 12mm; }
+  /* Named pages (Chrome 85+): report pages opt into A4 via `page: report`.
+     Ticket pages (POS receipt, purchase invoice, bin card) use the default
+     @page which declares NO size — so Chrome uses the printer driver's paper
+     (the 80mm roll selected for the POS-80C) instead of overriding it. */
+  @page { margin: 2mm; }
+  @page report { size: A4 portrait; margin: 12mm; }
   body.report-page {
+    page: report;
     display: block !important;
     width: 100% !important;
     background: #fff !important;
@@ -2128,10 +2134,8 @@ code {
 }
 
 @media print {
-  @page {
-    size: 80mm auto;
-    margin: 2mm;
-  }
+  /* Ticket geometry: rules for receipt/invoice printing live here. The default
+     @page above has no size on purpose — see the comment there. */
 
   html, body {
     background: #fff !important;
@@ -2198,10 +2202,20 @@ code {
   .rt-items tbody td {
     color: #000 !important;
   }
+}
 
-  .purchase-invoice {
-    width: 100% !important;
-    max-width: none !important;
+/* Purchase invoice prints on the same 80mm roll as the POS receipt.
+   Only page furniture differs: keep the signature block compact. */
+.purchase-invoice .rt-sign {
+  margin-top: 12px;
+  font-size: 9px;
+}
+
+/* Ticket pages (POS receipt, purchase invoice, bin card): never inherit the
+   A4 report-page rule — their print geometry comes from the block above. */
+@media print {
+  body.print-80mm {
+    width: 76mm !important;
   }
 }
 
@@ -2213,13 +2227,9 @@ code {
   font-size: 12px;
   color: var(--text-300);
 }
-.purchase-invoice {
-  max-width: 720px !important;
-  width: 100%;
-}
-.purchase-invoice .rt-items {
-  width: 100%;
-  font-size: 12px;
+.purchase-invoice .rt-sign {
+  margin-top: 16px;
+  font-size: 10px;
 }
 
 /* ─── MOBILE TABLE IMPROVEMENTS ──────────────────────────── */

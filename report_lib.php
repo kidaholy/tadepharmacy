@@ -191,7 +191,7 @@ function reportBuildSalesContext(array $filters, string $saleAlias = 's'): array
             reportApplyTypeCategory($filters, 'mf', $where, $params);
         }
         if ($filters['supplier']) {
-            $joins[]  = 'JOIN batches bf ON bf.id = si.batch_id';
+            $joins[]  = 'LEFT JOIN batches bf ON bf.id = si.batch_id';
             $where[]  = 'bf.supplier_id = ?';
             $params[] = $filters['supplier'];
         }
@@ -211,7 +211,7 @@ function reportItemFilterContext(array $filters, string $from, string $to): arra
     $params = [$from, $to];
     $joins = [
         'JOIN sales s ON s.id = si.sale_id',
-        'JOIN batches b ON b.id = si.batch_id',
+        'LEFT JOIN batches b ON b.id = si.batch_id',
         'JOIN medicines m ON m.id = si.medicine_id',
     ];
 
@@ -349,13 +349,13 @@ function reportOverviewKpis(PDO $pdo, array $dates, array $filters): array {
     $prevItemCtx = reportItemFilterContext($filters, $pf, $pt);
 
     $cogsCur = reportFetchScalar($pdo, "
-        SELECT COALESCE(SUM(si.quantity * b.purchase_price), 0)
+        SELECT COALESCE(SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)), 0)
         FROM sale_items si
         {$itemCtx['joins']}
         WHERE {$itemCtx['where']}
     ", $itemCtx['params']);
     $cogsPrev = reportFetchScalar($pdo, "
-        SELECT COALESCE(SUM(si.quantity * b.purchase_price), 0)
+        SELECT COALESCE(SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)), 0)
         FROM sale_items si
         {$prevItemCtx['joins']}
         WHERE {$prevItemCtx['where']}
@@ -523,11 +523,11 @@ function reportTopProducts(PDO $pdo, array $dates, array $filters, string $sort 
                COALESCE(m.product_type, c.product_type, 'medicine') AS product_type,
                SUM(si.quantity) AS qty_sold,
                SUM(si.subtotal) AS revenue,
-               SUM(si.quantity * b.purchase_price) AS purchase_cost,
-               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS gross_profit,
-               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS net_profit,
+               SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS purchase_cost,
+               SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS gross_profit,
+               SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS net_profit,
                CASE WHEN SUM(si.subtotal) > 0
-                    THEN (SUM(si.subtotal) - SUM(si.quantity * b.purchase_price)) / SUM(si.subtotal) * 100
+                    THEN (SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0))) / SUM(si.subtotal) * 100
                     ELSE 0 END AS profit_margin,
                COALESCE(st.stock, 0) AS current_stock
         FROM sale_items si
@@ -569,13 +569,13 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
 
     $perf = $pdo->prepare("
         SELECT SUM(si.quantity) AS qty_sold, SUM(si.subtotal) AS revenue,
-               SUM(si.quantity * b.purchase_price) AS purchase_cost,
+               SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS purchase_cost,
                COUNT(DISTINCT s.id) AS num_sales,
                COUNT(DISTINCT s.customer_name) AS num_customers,
                AVG(si.unit_price) AS avg_sell_price
         FROM sale_items si
         JOIN sales s ON s.id = si.sale_id
-        JOIN batches b ON b.id = si.batch_id
+        LEFT JOIN batches b ON b.id = si.batch_id
         WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
     ");
     $perf->execute([$medId, $from, $to]);
@@ -583,8 +583,8 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
 
     $trend = $pdo->prepare("
         SELECT $day AS day, SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
-               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
+               SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS profit
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id LEFT JOIN batches b ON b.id = si.batch_id
         WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
         GROUP BY day ORDER BY day ASC
     ");
@@ -595,8 +595,8 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
     $trendWeekly = $pdo->prepare("
         SELECT strftime('%Y-W%W', $day) AS period,
                SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
-               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
+               SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS profit
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id LEFT JOIN batches b ON b.id = si.batch_id
         WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
         GROUP BY period ORDER BY period ASC
     ");
@@ -607,8 +607,8 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
     $trendMonthly = $pdo->prepare("
         SELECT strftime('%Y-%m', $day) AS period,
                SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
-               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
+               SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS profit
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id LEFT JOIN batches b ON b.id = si.batch_id
         WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
         GROUP BY period ORDER BY period ASC
     ");
@@ -619,8 +619,8 @@ function reportProductDetail(PDO $pdo, int $medId, array $dates): ?array {
     $trendYearly = $pdo->prepare("
         SELECT strftime('%Y', $day) AS period,
                SUM(si.quantity) AS qty, SUM(si.subtotal) AS revenue,
-               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
-        FROM sale_items si JOIN sales s ON s.id = si.sale_id JOIN batches b ON b.id = si.batch_id
+               SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS profit
+        FROM sale_items si JOIN sales s ON s.id = si.sale_id LEFT JOIN batches b ON b.id = si.batch_id
         WHERE si.medicine_id = ? AND $day BETWEEN ? AND ?
         GROUP BY period ORDER BY period ASC
     ");
@@ -900,7 +900,7 @@ function reportInsights(PDO $pdo, array $dates, array $filters): array {
     }
 
     $topProfit = $pdo->prepare("
-        SELECT m.name, SUM(si.subtotal - si.quantity * b.purchase_price) AS profit
+        SELECT m.name, SUM(si.subtotal - si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS profit
         FROM sale_items si
         {$itemCtx['joins']}
         WHERE {$itemCtx['where']}
@@ -1318,7 +1318,7 @@ function reportSalesCategories(PDO $pdo, array $dates, array $filters): array {
                COUNT(DISTINCT s.id) AS transactions,
                SUM(si.quantity) AS units,
                SUM(si.subtotal) AS revenue,
-               SUM(si.subtotal) - SUM(si.quantity * b.purchase_price) AS profit
+               SUM(si.subtotal) - SUM(si.quantity * COALESCE(b.purchase_price, si.cost_price, 0)) AS profit
         FROM sale_items si
         {$itemCtx['joins']}
         LEFT JOIN categories c ON c.id = m.category_id

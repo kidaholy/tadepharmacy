@@ -49,49 +49,72 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         } elseif ($quantity < 0 || $purchasePrice < 0 || $sellingPrice < 0) {
             $error = 'Quantity and prices cannot be negative.';
         } else {
-            $soldStmt = $pdo->prepare("SELECT COALESCE(SUM(quantity), 0) FROM sale_items WHERE batch_id=?");
-            $soldStmt->execute([$bid]);
-            $soldQty = (int)$soldStmt->fetchColumn();
-
-            if ($quantity < $soldQty) {
-                $error = "Quantity cannot be less than already sold ($soldQty units).";
+            // Stock is the on-hand count; past sales already decremented it, so no
+            // lower bound from sale history — the batch can be restocked or
+            // corrected to any non-negative quantity.
+            $dup = $pdo->prepare("SELECT id FROM batches WHERE medicine_id=? AND batch_number=? AND id!=?");
+            $dup->execute([$medicineId, $batchNumber, $bid]);
+            if ($dup->fetch()) {
+                $error = 'Another batch with this number already exists for this medicine.';
             } else {
-                $dup = $pdo->prepare("SELECT id FROM batches WHERE medicine_id=? AND batch_number=? AND id!=?");
-                $dup->execute([$medicineId, $batchNumber, $bid]);
-                if ($dup->fetch()) {
-                    $error = 'Another batch with this number already exists for this medicine.';
-                } else {
-                    $oldQty = (int)$b['quantity'];
-                    $pdo->prepare("
-                        UPDATE batches
-                        SET medicine_id=?, batch_number=?, quantity=?, purchase_price=?,
-                            selling_price=?, expiry_date=?, manufacture_date=?,
-                            variant=?, model_number=?, serial_number=?, warranty_period=?, warranty_expiry=?
-                        WHERE id=?
-                    ")->execute([
-                        $medicineId, $batchNumber, $quantity, $purchasePrice,
-                        $sellingPrice, $expiryDate, $manufactureDate, $variant, $modelNumber,
-                        $serialNumber, $warrantyPeriod, $warrantyExpiry, $bid
-                    ]);
-                    auditLog($pdo, 'batch_edit', 'batch', $bid,
-                        "Batch {$batchNumber}: qty {$oldQty}→{$quantity}, buy {$purchasePrice}, sell {$sellingPrice}");
-                    $msg = 'Batch updated successfully.';
-                }
+                $oldStmt = $pdo->prepare("SELECT quantity FROM batches WHERE id=?");
+                $oldStmt->execute([$bid]);
+                $oldQty = (int)$oldStmt->fetchColumn();
+                $pdo->prepare("
+                    UPDATE batches
+                    SET medicine_id=?, batch_number=?, quantity=?, purchase_price=?,
+                        selling_price=?, expiry_date=?, manufacture_date=?,
+                        variant=?, model_number=?, serial_number=?, warranty_period=?, warranty_expiry=?
+                    WHERE id=?
+                ")->execute([
+                    $medicineId, $batchNumber, $quantity, $purchasePrice,
+                    $sellingPrice, $expiryDate, $manufactureDate, $variant, $modelNumber,
+                    $serialNumber, $warrantyPeriod, $warrantyExpiry, $bid
+                ]);
+                auditLog($pdo, 'batch_edit', 'batch', $bid,
+                    "Batch {$batchNumber}: qty {$oldQty}→{$quantity}, buy {$purchasePrice}, sell {$sellingPrice}");
+                $msg = 'Batch updated successfully.';
             }
         }
     }
     if ($act === 'delete_batch') {
+        $delBid = (int)$_POST['batch_id'];
         try {
-            $delBid = (int)$_POST['batch_id'];
-            $delInfo = $pdo->prepare("SELECT b.batch_number, b.quantity, m.name FROM batches b JOIN medicines m ON m.id=b.medicine_id WHERE b.id=?");
+            $pdo->beginTransaction();
+            $delInfo = $pdo->prepare("
+                SELECT b.batch_number, b.quantity, b.purchase_price, b.selling_price,
+                       b.quantity_received, m.name, m.id AS medicine_id
+                FROM batches b JOIN medicines m ON m.id=b.medicine_id
+                WHERE b.id=?");
             $delInfo->execute([$delBid]);
             $delRow = $delInfo->fetch();
-            $pdo->prepare("DELETE FROM batches WHERE id=?")->execute([$delBid]);
-            if ($delRow) auditLog($pdo, 'batch_delete', 'batch', $delBid,
-                'Deleted batch ' . $delRow['batch_number'] . ' of ' . $delRow['name'] . ' (qty=' . $delRow['quantity'] . ')');
-            $msg = 'Batch removed.';
-        } catch (PDOException $e) {
-            $error = 'Cannot delete batch: It is linked to existing sales records.';
+            if (!$delRow) {
+                $error = 'Batch not found (it may have already been deleted).';
+            } else {
+                // Preserve sales history: what this batch cost and its original batch label
+                // stay on the sale_items rows even after the batch row is gone.
+                $backfill = $pdo->prepare("
+                    UPDATE sale_items
+                    SET cost_price = COALESCE(cost_price, ?),
+                        batch_number = COALESCE(batch_number, ?)
+                    WHERE batch_id = ? AND (cost_price IS NULL OR batch_number IS NULL)
+                ");
+                $backfill->execute([
+                    $delRow['purchase_price'], $delRow['batch_number'], $delBid,
+                ]);
+
+                // FKs with ON DELETE SET NULL detach sale_items/sale_returns rows
+                // automatically; sale_items.batch_id becomes NULL and history remains.
+                $pdo->prepare("DELETE FROM batches WHERE id=?")->execute([$delBid]);
+                auditLog($pdo, 'batch_delete', 'batch', $delBid,
+                    'Deleted batch ' . $delRow['batch_number'] . ' of ' . $delRow['name']
+                    . ' (qty=' . $delRow['quantity'] . ', buy=' . $delRow['purchase_price'] . ')');
+                $pdo->commit();
+                $msg = 'Batch removed.';
+            }
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            $error = 'Cannot delete batch: ' . $e->getMessage();
         }
     }
 }

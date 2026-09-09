@@ -116,13 +116,15 @@ function initDB(PDO $pdo): void {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             sale_id INTEGER NOT NULL,
             medicine_id INTEGER NOT NULL,
-            batch_id INTEGER NOT NULL,
+            batch_id INTEGER,
             quantity INTEGER NOT NULL,
             unit_price REAL NOT NULL,
             subtotal REAL NOT NULL,
+            cost_price REAL,
+            batch_number TEXT,
             FOREIGN KEY (sale_id) REFERENCES sales(id) ON DELETE CASCADE,
             FOREIGN KEY (medicine_id) REFERENCES medicines(id),
-            FOREIGN KEY (batch_id) REFERENCES batches(id)
+            FOREIGN KEY (batch_id) REFERENCES batches(id) ON DELETE SET NULL
         );
 
         CREATE TABLE IF NOT EXISTS purchases (
@@ -310,6 +312,75 @@ function initDB(PDO $pdo): void {
     require_once __DIR__ . '/permissions_lib.php';
     initPermissionsSchema($pdo);
     initPurchaseModuleSchema($pdo);
+    enableBatchDelete($pdo);
+}
+
+/**
+ * Make inventory batches deletable at any time (edit/delete stock freely).
+ *
+ * The original sale_items/sale_returns/purchase_return_items schemas referenced
+ * batches(id) with a RESTRICT-style FK (and sale_items.batch_id NOT NULL), which made
+ * every batch that had ever sold impossible to delete. This migration rebuilds those
+ * child tables so deleting a batch only detaches history rows (ON DELETE SET NULL)
+ * instead of blocking it. Historical sales keep their numbers via the cost_price and
+ * batch_number snapshots captured at sale time.
+ */
+function enableBatchDelete(PDO $pdo): void {
+    $rebuild = function (string $table) use ($pdo): void {
+        $cols = $pdo->query("PRAGMA table_info($table)")->fetchAll();
+        if (!$cols) return; // table doesn't exist yet; the CREATE IF NOT EXISTS above made it fresh
+        $fkList = $pdo->query("PRAGMA foreign_key_list($table)")->fetchAll();
+        $needsFix = false;
+        foreach ($fkList as $fk) {
+            if (($fk['table'] ?? '') === 'batches'
+                && strtolower((string)($fk['on_delete'] ?? '')) !== 'set null') {
+                $needsFix = true; break;
+            }
+        }
+        if (!$needsFix) {
+            // Also rebuild if batch_id is NOT NULL (blocks inserts after batch deletion).
+            foreach ($cols as $c) {
+                if ($c['name'] === 'batch_id' && (int)$c['notnull'] === 1) { $needsFix = true; break; }
+            }
+        }
+        if (!$needsFix) return;
+
+        $defs = (string)$pdo->query("SELECT sql FROM sqlite_master WHERE type='table' AND name='$table'")->fetchColumn();
+        if ($defs === '') return;
+        $newDefs = str_replace(
+            'REFERENCES batches(id)',
+            'REFERENCES batches(id) ON DELETE SET NULL',
+            $defs
+        );
+        if ($table === 'sale_items') {
+            $newDefs = str_replace('batch_id INTEGER NOT NULL', 'batch_id INTEGER', $newDefs);
+        }
+        if ($newDefs === $defs) return;
+
+        // Standard SQLite table-rebuild (12-step) flow.
+        $pdo->exec('PRAGMA foreign_keys=OFF');
+        $tmp = $table . '__rebuild__';
+        $pdo->exec("DROP TABLE IF EXISTS $tmp");
+        $pdo->exec("ALTER TABLE $table RENAME TO $tmp");
+        $pdo->exec($newDefs);
+        $pdo->exec("INSERT INTO $table SELECT * FROM $tmp");
+        $pdo->exec("DROP TABLE $tmp");
+        $pdo->exec('PRAGMA foreign_keys=ON');
+        if ($table === 'sale_items') {
+            // Rebuilding a table drops its indexes.
+            $pdo->exec("CREATE INDEX IF NOT EXISTS idx_sale_items_sale ON sale_items(sale_id)");
+        }
+    };
+
+    $rebuild('sale_items');
+    $rebuild('sale_returns');
+    $rebuild('purchase_return_items');
+
+    // Cost snapshot for profit reports + original batch label for receipts (survive batch deletion).
+    try { $pdo->exec('ALTER TABLE sale_items ADD COLUMN cost_price REAL'); } catch (PDOException $e) { /* exists */ }
+    try { $pdo->exec('ALTER TABLE sale_items ADD COLUMN batch_number TEXT'); } catch (PDOException $e) { /* exists */ }
+
+    $pdo->exec('CREATE INDEX IF NOT EXISTS idx_sale_items_batch ON sale_items(batch_id)');
 }
 
 function initPurchaseModuleSchema(PDO $pdo): void {

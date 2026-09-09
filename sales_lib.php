@@ -225,7 +225,7 @@ function fefoAllocate(PDO $pdo, int $medicineId, int $qtyNeeded): array {
     }
 
     $stmt = $pdo->prepare("
-        SELECT id, batch_number, quantity, selling_price, expiry_date
+        SELECT id, batch_number, quantity, selling_price, purchase_price, expiry_date
         FROM batches
         WHERE medicine_id = ? AND quantity > 0 AND expiry_date >= date('now')
         ORDER BY expiry_date ASC, id ASC
@@ -254,6 +254,7 @@ function fefoAllocate(PDO $pdo, int $medicineId, int $qtyNeeded): array {
             'medicine_id'  => $medicineId,
             'batch_id'     => (int)$b['id'],
             'batch_number' => $b['batch_number'],
+            'cost_price'   => (float)$b['purchase_price'],
             'qty'          => $take,
             'price'        => $price,
             'subtotal'     => $price * $take,
@@ -341,6 +342,7 @@ function buildBatchLineItems(PDO $pdo, array $cartItems): array {
             'medicine_id'  => (int)$b['medicine_id'],
             'batch_id'     => (int)$b['id'],
             'batch_number' => $b['batch_number'],
+            'cost_price'   => (float)$b['purchase_price'],
             'med_name'     => $b['name'],
             'generic'      => $b['generic_name'] ?? '',
             'strength'     => $b['strength'] ?? '',

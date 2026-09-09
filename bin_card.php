@@ -223,7 +223,7 @@ if ($printMode):
 </html>
 <?php exit; endif; ?>
 
-<?php renderHead('Bin Card — ' . $product['name']); ?>
+<?php renderHead('Bin Card — ' . $product['name'], 'print-80mm'); ?>
 renderSidebar();
 ?>
 <div id="sidebarOverlay" class="overlay-bg" onclick="toggleSidebar()"></div>

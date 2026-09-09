@@ -622,8 +622,11 @@ function demoCreateSale(PDO $pdo, array $opts, int $adminId): ?int {
     $saleId = (int)$pdo->lastInsertId();
 
     foreach ($lineItems as $li) {
-        $pdo->prepare("INSERT INTO sale_items (sale_id,medicine_id,batch_id,quantity,unit_price,subtotal) VALUES (?,?,?,?,?,?)")
-            ->execute([$saleId, $li['medicine_id'], $li['batch_id'], $li['qty'], $li['price'], $li['subtotal']]);
+        $costStmt = $pdo->prepare("SELECT purchase_price FROM batches WHERE id=?");
+        $costStmt->execute([$li['batch_id']]);
+        $cost = $costStmt->fetchColumn();
+        $pdo->prepare("INSERT INTO sale_items (sale_id,medicine_id,batch_id,quantity,unit_price,subtotal,cost_price,batch_number) VALUES (?,?,?,?,?,?,?,?,?)")
+            ->execute([$saleId, $li['medicine_id'], $li['batch_id'], $li['qty'], $li['price'], $li['subtotal'], $cost !== false ? (float)$cost : null, $li['batch_number'] ?? null]);
         $pdo->prepare("UPDATE batches SET quantity = quantity - ? WHERE id=?")
             ->execute([$li['qty'], $li['batch_id']]);
     }
