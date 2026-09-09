@@ -39,10 +39,14 @@ if ($stockTab === 'fast') {
     usort($stockRows, fn($a, $b) => strcasecmp($a['name'], $b['name']));
 }
 
-// ---- Expiry table (respects the active expiry tab) ----
+// ---- Expiry table (respects the active expiry tab + day window) ----
 $expiryTab = $f['expiry'];
+$withinDays = (int)($f['within_days'] ?? 90);
 if ($expiryTab === 'expiring') {
-    $expiryRows = array_values(array_filter($expiryRows, fn($r) => $r['status']['key'] === 'expiring'));
+    $expiryRows = array_values(array_filter($expiryRows, function ($r) use ($withinDays) {
+        $d = $r['status']['days'] ?? null;
+        return $d !== null && $d >= 0 && $d <= $withinDays;
+    }));
 } elseif ($expiryTab === 'expired') {
     $expiryRows = array_values(array_filter($expiryRows, fn($r) => $r['status']['key'] === 'expired'));
 } elseif ($expiryTab === 'safe') {
@@ -150,6 +154,14 @@ renderSidebar();
           <?php endforeach; ?>
         </select>
       </div>
+      <div class="form-group">
+        <label>Expiring Within</label>
+        <select name="within">
+          <?php foreach (expiryWithinPresets() as $wKey => $wMeta): ?>
+          <option value="<?= $wKey ?>" <?= ($f['within'] ?? '90') === $wKey ? 'selected' : '' ?>><?= htmlspecialchars($wMeta['label']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </div>
     </div>
     <div class="report-filter-actions">
       <button type="submit" class="btn btn-primary"><i data-lucide="filter"></i> Apply Filter</button>
@@ -171,6 +183,7 @@ renderSidebar();
   if ($f['batch'] !== '') $chips[] = 'Batch: ' . $f['batch'];
   if ($stockTab !== 'all') $chips[] = 'Stock: ' . $stockTabs[$stockTab];
   if ($expiryTab !== 'all') $chips[] = 'Expiry: ' . $expiryTabs[$expiryTab];
+  if ($expiryTab === 'expiring') $chips[] = 'Within: ' . ($f['within_label'] ?? '3 Months');
   ?>
   <div class="report-active-filters" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
     <?php foreach ($chips as $chip): ?>
@@ -403,7 +416,9 @@ renderSidebar();
 <div class="card mb-20">
   <div class="card-header" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;">
     <span class="card-title"><i data-lucide="calendar-clock" style="width:16px;height:16px;"></i> Expiry Management
-      <span style="font-size:12px;color:var(--text-300);font-weight:400;">Expiring soon = within 90 days</span>
+      <?php if ($expiryTab === 'expiring'): ?>
+      <span style="font-size:12px;color:var(--text-300);font-weight:400;">Expiring within <?= htmlspecialchars($f['within_label'] ?? '3 Months') ?></span>
+      <?php endif; ?>
     </span>
     <span class="badge badge-gray"><?= number_format(count($expiryRows)) ?> batches</span>
   </div>
@@ -412,6 +427,17 @@ renderSidebar();
     <a href="?<?= htmlspecialchars($expQS($key)) ?>" class="btn btn-sm <?= $expiryTab === $key ? 'btn-primary' : 'btn-ghost' ?>"><?= $label ?></a>
     <?php endforeach; ?>
   </div>
+  <?php if ($expiryTab === 'expiring'): ?>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding:0 20px 14px;">
+    <span style="font-size:12px;font-weight:600;color:var(--text-300);">Within:</span>
+    <?php foreach (expiryWithinPresets() as $wKey => $wMeta):
+      $wActive = ($f['within'] ?? '90') === $wKey;
+    ?>
+    <a href="?<?= htmlspecialchars(reportInventoryQueryString($dates, array_merge($f, ['expiry' => 'expiring', 'within' => $wKey]))) ?>"
+       class="btn btn-sm <?= $wActive ? 'btn-primary' : 'btn-ghost' ?>"><?= htmlspecialchars($wMeta['label']) ?></a>
+    <?php endforeach; ?>
+  </div>
+  <?php endif; ?>
   <div class="table-wrap">
     <table>
       <thead>

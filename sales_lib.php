@@ -205,6 +205,47 @@ function expiryDaysLabel(?string $date): string {
     return 'Expired ' . abs($days) . ' days ago';
 }
 
+/** Day-window presets for Expiring Soon lists (Today / Week / Month / …). */
+function expiryWithinPresets(): array {
+    return [
+        'today' => ['label' => 'Today',      'days' => 0],
+        '7'     => ['label' => 'This Week',  'days' => 7],
+        '30'    => ['label' => 'This Month', 'days' => 30],
+        '90'    => ['label' => '3 Months',   'days' => 90],
+        '180'   => ['label' => '6 Months',   'days' => 180],
+        '365'   => ['label' => '1 Year',     'days' => 365],
+    ];
+}
+
+/**
+ * Resolve a within= preset key to ['key','label','days'].
+ * Default is 30 days (This Month) to match the historical Expiring Soon window.
+ */
+function expiryWithinParse(?string $key, string $default = '30'): array {
+    $presets = expiryWithinPresets();
+    $key = trim((string)$key);
+    if ($key === '' || !isset($presets[$key])) {
+        $key = $default;
+    }
+    return [
+        'key'   => $key,
+        'label' => $presets[$key]['label'],
+        'days'  => (int)$presets[$key]['days'],
+    ];
+}
+
+/**
+ * SQL condition: tracked expiry date falls within the next N days (inclusive),
+ * with quantity still on hand. $alias is the batches table alias (e.g. 'b' or '').
+ */
+function expiryWithinSql(string $alias = 'b', int $days = 30): string {
+    $days = max(0, min(3650, (int)$days));
+    $prefix = $alias !== '' ? ($alias . '.') : '';
+    $col = $prefix . 'expiry_date';
+    $qty = $prefix . 'quantity';
+    return "{$col} BETWEEN date('now') AND date('now', '+{$days} days') AND {$qty} > 0 AND {$col} < '9000-01-01'";
+}
+
 function expiryTrackedSql(string $column = 'expiry_date'): string {
     return $column . " < '9000-01-01'";
 }

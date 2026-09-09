@@ -18,6 +18,17 @@ $catFilter = (int)($_GET['cat'] ?? 0);
 $categoriesByType = categoriesByProductType($pdo);
 $typeCategories = $typeFilter ? ($categoriesByType[$typeFilter] ?? []) : [];
 
+// Expiring Soon day-window (Today / Week / Month / 3–6 months / 1 year).
+$expiryWithin = expiryWithinParse($_GET['within'] ?? '30');
+$expiryDays   = (int)$expiryWithin['days'];
+$expiryKey    = $expiryWithin['key'];
+// Only keep within= in the URL while viewing Expiring Soon (avoids stale params on other tabs).
+if ($filter !== 'expiring') {
+    $expiryKey = '30';
+    $expiryDays = 30;
+    $expiryWithin = expiryWithinParse('30');
+}
+
 // Batch edit
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $act = $_POST['act'] ?? '';
@@ -143,7 +154,7 @@ if ($viewBatches) {
     $params[] = $medId;
     if ($filter === 'low')      { $where[] = "b.quantity > 0 AND b.quantity <= m.reorder_level"; }
     if ($filter === 'expired')  { $where[] = "b.expiry_date < date('now') AND b.expiry_date < '9000-01-01'"; }
-    if ($filter === 'expiring') { $where[] = "b.expiry_date BETWEEN date('now') AND date('now','+30 days') AND b.quantity > 0 AND b.expiry_date < '9000-01-01'"; }
+    if ($filter === 'expiring') { $where[] = expiryWithinSql('b', $expiryDays); }
     if ($filter === 'out')      { $where[] = "b.quantity = 0"; }
 
     $sql = "
@@ -171,7 +182,7 @@ if ($viewBatches) {
         $having[] = "SUM(CASE WHEN b.expiry_date < date('now') AND b.expiry_date < '9000-01-01' AND b.quantity > 0 THEN 1 ELSE 0 END) > 0";
     }
     if ($filter === 'expiring') {
-        $having[] = "SUM(CASE WHEN b.expiry_date BETWEEN date('now') AND date('now','+30 days') AND b.expiry_date < '9000-01-01' AND b.quantity > 0 THEN 1 ELSE 0 END) > 0";
+        $having[] = 'SUM(CASE WHEN ' . expiryWithinSql('b', $expiryDays) . ' THEN 1 ELSE 0 END) > 0';
     }
     if ($filter === 'out') {
         $having[] = "COALESCE(SUM(b.quantity), 0) = 0";
@@ -210,7 +221,7 @@ $counts = [
         )
     ")->fetchColumn(),
     'expired'  => $pdo->query("SELECT COUNT(DISTINCT medicine_id) FROM batches WHERE expiry_date < date('now') AND expiry_date < '9000-01-01' AND quantity > 0")->fetchColumn(),
-    'expiring' => $pdo->query("SELECT COUNT(DISTINCT medicine_id) FROM batches WHERE expiry_date BETWEEN date('now') AND date('now','+30 days') AND quantity > 0 AND expiry_date < '9000-01-01'")->fetchColumn(),
+    'expiring' => $pdo->query("SELECT COUNT(DISTINCT medicine_id) FROM batches WHERE " . expiryWithinSql('', $expiryDays))->fetchColumn(),
     'out'      => $pdo->query("
         SELECT COUNT(*) FROM (
             SELECT m.id FROM medicines m
@@ -220,6 +231,14 @@ $counts = [
         )
     ")->fetchColumn(),
 ];
+
+// Per-window counts for the Expiring Soon day chips.
+$expiryWindowCounts = [];
+foreach (expiryWithinPresets() as $wKey => $wMeta) {
+    $expiryWindowCounts[$wKey] = (int)$pdo->query(
+        'SELECT COUNT(DISTINCT medicine_id) FROM batches WHERE ' . expiryWithinSql('', (int)$wMeta['days'])
+    )->fetchColumn();
+}
 
 $typeCounts = ['all' => 0, 'medicine' => 0, 'cosmetic' => 0, 'equipment' => 0];
 foreach ($pdo->query("
@@ -237,6 +256,7 @@ foreach ($pdo->query("
 $invExtra = array_filter([
     'filter' => $filter !== 'all' ? $filter : null,
     'q' => $search ?: null,
+    'within' => ($filter === 'expiring' && $expiryKey !== '30') ? $expiryKey : null,
 ]);
 
 renderHead('Inventory');
@@ -256,7 +276,7 @@ renderSidebar();
 <?php endif; ?>
 
 <!-- Filter tabs -->
-<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:20px;">
+<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:<?= $filter === 'expiring' ? '12' : '20' ?>px;">
   <?php
   $tabs = [
     ['key'=>'all',      'label'=>'All Stock',       'cnt'=>$counts['all'],      'class'=>'badge-blue'],
@@ -272,6 +292,8 @@ renderSidebar();
         'type' => $typeFilter ?: null,
         'cat' => $catFilter ?: null,
         'q' => $search ?: null,
+        // Default Expiring Soon to This Month; keep current window when staying on expiring.
+        'within' => $tab['key'] === 'expiring' ? ($filter === 'expiring' ? $expiryKey : '30') : null,
     ]));
   ?>
   <a href="inventory.php<?= $tabQs ? '?' . htmlspecialchars($tabQs) : '' ?>"
@@ -282,22 +304,53 @@ renderSidebar();
   <?php endforeach; ?>
 </div>
 
+<?php if ($filter === 'expiring'): ?>
+<div class="card mb-20" style="padding:12px 16px;">
+  <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+    <span style="font-size:13px;font-weight:600;color:var(--text-200);">Expires within:</span>
+    <?php foreach (expiryWithinPresets() as $wKey => $wMeta):
+      $wActive = $expiryKey === $wKey;
+      $wQs = http_build_query(array_filter([
+          'filter' => 'expiring',
+          'within' => $wKey,
+          'type' => $typeFilter ?: null,
+          'cat' => $catFilter ?: null,
+          'q' => $search ?: null,
+          'med' => $medId ?: null,
+      ]));
+    ?>
+    <a href="inventory.php?<?= htmlspecialchars($wQs) ?>"
+       class="btn btn-sm <?= $wActive ? 'btn-primary' : 'btn-ghost' ?>" style="gap:6px;">
+      <?= htmlspecialchars($wMeta['label']) ?>
+      <span class="badge <?= $wActive ? 'badge-blue' : 'badge-gray' ?>"><?= (int)($expiryWindowCounts[$wKey] ?? 0) ?></span>
+    </a>
+    <?php endforeach; ?>
+    <span style="font-size:12px;color:var(--text-300);margin-left:4px;">
+      Showing products expiring <?= $expiryDays === 0 ? 'today' : ('within ' . (int)$expiryDays . ' days') ?> (<?= htmlspecialchars($expiryWithin['label']) ?>)
+    </span>
+  </div>
+</div>
+<?php endif; ?>
+
 <div class="card">
   <div class="card-header">
     <span class="card-title">
       <?php if ($viewBatches): ?>
         <?= htmlspecialchars($focusMedName) ?> — batches (<?= count($batches) ?>)
+      <?php elseif ($filter === 'expiring'): ?>
+        Expiring Soon — <?= htmlspecialchars($expiryWithin['label']) ?> (<?= count($stockRows) ?>)
       <?php else: ?>
         <?= htmlspecialchars($typeFilter ? (productTypeMeta()[$typeFilter]['plural'] ?? 'Stock') : 'Stock') ?> (<?= count($stockRows) ?>)
       <?php endif; ?>
     </span>
     <form method="GET" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;">
       <input type="hidden" name="filter" value="<?= htmlspecialchars($filter) ?>">
+      <?php if ($filter === 'expiring'): ?><input type="hidden" name="within" value="<?= htmlspecialchars($expiryKey) ?>"><?php endif; ?>
       <?php if ($typeFilter): ?><input type="hidden" name="type" value="<?= htmlspecialchars($typeFilter) ?>"><?php endif; ?>
       <?php if ($catFilter): ?><input type="hidden" name="cat" value="<?= (int)$catFilter ?>"><?php endif; ?>
       <?php if ($viewBatches): ?>
       <input type="hidden" name="med" value="<?= $medId ?>">
-      <a href="inventory.php?<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left"></i> All products</a>
+      <a href="inventory.php?<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'within' => $filter === 'expiring' ? $expiryKey : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left"></i> All products</a>
       <a href="bin_card.php?id=<?= $medId ?>" class="btn btn-ghost btn-sm"><i data-lucide="file-text"></i> Bin Card</a>
       <?php endif; ?>
       <div class="search-bar"><i data-lucide="search"></i><input type="text" name="q" value="<?= htmlspecialchars($search) ?>" placeholder="Search product or batch..."></div>
@@ -435,7 +488,7 @@ renderSidebar();
         <td><span class="badge <?= $statusClass ?>"><?= $statusLabel ?></span></td>
         <td>
           <div class="row-actions">
-            <a href="inventory.php?med=<?= (int)$r['medicine_id'] ?>&<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm">Batches</a>
+            <a href="inventory.php?med=<?= (int)$r['medicine_id'] ?>&<?= htmlspecialchars(http_build_query(array_filter(['filter' => $filter !== 'all' ? $filter : null, 'within' => $filter === 'expiring' ? $expiryKey : null, 'type' => $typeFilter ?: null, 'cat' => $catFilter ?: null, 'q' => $search ?: null]))) ?>" class="btn btn-ghost btn-sm">Batches</a>
             <a href="bin_card.php?id=<?= (int)$r['medicine_id'] ?>" class="btn btn-ghost btn-sm">Bin Card</a>
           </div>
         </td>

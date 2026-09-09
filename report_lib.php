@@ -1460,6 +1460,7 @@ function reportInventoryFilters(array $input): array {
     $validExpiry = ['all', 'expiring', 'expired', 'safe'];
     $stock = trim((string)($input['stock'] ?? 'all'));
     $expiry = trim((string)($input['expiry'] ?? 'all'));
+    $within = expiryWithinParse($input['within'] ?? '90', '90');
     return [
         'type'     => reportParseProductType($input),
         'product'  => (int)($input['product'] ?? 0),
@@ -1469,6 +1470,9 @@ function reportInventoryFilters(array $input): array {
         'batch'    => trim((string)($input['batch'] ?? '')),
         'stock'    => in_array($stock, $validStock, true) ? $stock : 'all',
         'expiry'   => in_array($expiry, $validExpiry, true) ? $expiry : 'all',
+        'within'   => $within['key'],
+        'within_days' => $within['days'],
+        'within_label' => $within['label'],
     ];
 }
 
@@ -1486,6 +1490,7 @@ function reportInventoryQueryString(array $dates, array $f, array $extra = []): 
         'batch'    => $f['batch'] ?: null,
         'stock'    => ($f['stock'] ?? 'all') !== 'all' ? $f['stock'] : null,
         'expiry'   => ($f['expiry'] ?? 'all') !== 'all' ? $f['expiry'] : null,
+        'within'   => (($f['expiry'] ?? '') === 'expiring' && ($f['within'] ?? '90') !== '90') ? $f['within'] : null,
     ], fn($v) => $v !== null && $v !== '');
     return http_build_query(array_merge($qs, $extra));
 }
