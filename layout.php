@@ -6,6 +6,9 @@ $currentPage = basename($_SERVER['PHP_SELF'], '.php');
 if (str_starts_with($currentPage, 'report_')) {
     $currentPage = 'reports';
 }
+if ($currentPage === 'investment') {
+    $currentPage = 'reports';
+}
 if ($currentPage === 'purchase_invoice') {
     $currentPage = 'purchases';
 }

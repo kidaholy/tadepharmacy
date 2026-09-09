@@ -56,6 +56,7 @@ function pagePermissionMap(): array {
         'suppliers'         => ['suppliers.view', 'purchases.view'],
         'inventory'     => 'inventory.view',
         'reports'       => 'reports.view',
+        'investment'    => 'reports.view',
         'settings'      => 'settings.view',
         'landing_cms'   => 'landing.edit',
         'administrator' => ['users.manage', 'roles.manage'],

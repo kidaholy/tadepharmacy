@@ -1020,6 +1020,8 @@ function reportNavItems(): array {
         ['page' => 'report_profit',     'label' => 'Profit',             'icon' => 'trending-up'],
         ['page' => 'report_customers',  'label' => 'Customers',          'icon' => 'users'],
         ['page' => 'report_purchases',  'label' => 'Purchases',          'icon' => 'package-open'],
+        // Investment & Growth analysis (read-only layer + optional purchase draft)
+        ['page' => 'investment',        'label' => 'Investment & Growth', 'icon' => 'sprout'],
     ];
 }
 

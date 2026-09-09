@@ -231,6 +231,38 @@ switch ($report) {
         }
         $filename = 'inventory-report-' . $dates['from'] . '-' . $dates['to'];
         break;
+    case 'investment':
+        require_once __DIR__ . '/investment_lib.php';
+        $cfg = invConfig($_GET);
+        $inv = invAnalyze($pdo, $dates, $filters, $cfg);
+        $headers = ['Product', 'Category', 'Units Sold', 'Sales Revenue', 'Gross Profit', 'Margin %', 'Current Stock', 'Avg Daily Sales', 'Days of Stock', 'Sales Growth %', 'Investment Score', 'Recommendation', 'Recommended Qty', 'Est. Investment', 'Est. Revenue', 'Est. Profit', 'Est. ROI %'];
+        $ranked = $inv['rows'];
+        usort($ranked, fn($a, $b) => $b['score'] <=> $a['score']);
+        foreach ($ranked as $m) {
+            $rp = $m['purchase'];
+            $headersRow = [
+                $m['name'],
+                $m['category'],
+                $m['units_sold'],
+                round($m['revenue'], 2),
+                round($m['gross_profit'], 2),
+                round($m['margin_pct'], 1),
+                $m['stock'],
+                round($m['avg_daily'], 2),
+                $m['coverage'] >= 9999 ? '' : round($m['coverage'], 0),
+                round($m['growth_pct'], 1),
+                $m['score'],
+                $m['rec'][2] ?? $m['rec'][0],
+                $rp['recommended_qty'],
+                $rp['est_cost'],
+                $rp['est_revenue'],
+                $rp['est_profit'],
+                $rp['est_roi'],
+            ];
+            $rows[] = $headersRow;
+        }
+        $filename = 'investment-growth-' . $dates['from'] . '-' . $dates['to'];
+        break;
     default:
         $kpis = reportOverviewKpis($pdo, $dates, $filters);
         $headers = ['Metric', 'Value'];
