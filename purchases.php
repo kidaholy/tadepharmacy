@@ -107,10 +107,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             header('Location: purchases.php');
             exit;
         }
+        if ($act === 'delete') {
+            deletePurchase($pdo, (int)$_POST['id']);
+            flashSet('success', 'Purchase deleted permanently.');
+            header('Location: purchases.php');
+            exit;
+        }
     } catch (Throwable $e) {
         $error = $e->getMessage();
         if ($act === 'save_purchase') $action = 'add';
-        elseif (in_array($act, ['pay', 'return', 'receive', 'save_draft_edit', 'cancel'], true)) {
+        elseif (in_array($act, ['pay', 'return', 'receive', 'save_draft_edit', 'cancel', 'delete'], true)) {
             $action = 'view';
             $id = (int)($_POST['id'] ?? $id);
         }
@@ -1561,6 +1567,13 @@ recalc();
           <div class="row-actions">
             <a href="purchases.php?action=view&id=<?= $p['id'] ?>" class="btn btn-ghost btn-sm">View</a>
             <a href="purchase_invoice.php?id=<?= $p['id'] ?>" class="btn btn-ghost btn-sm">Print</a>
+            <?php if (!purchaseDeleteBlockers($p)): ?>
+            <form method="POST" class="row-action-form" onsubmit="return confirm('Delete this purchase permanently? This cannot be undone.')">
+              <input type="hidden" name="act" value="delete">
+              <input type="hidden" name="id" value="<?= (int)$p['id'] ?>">
+              <button type="submit" class="btn btn-danger btn-sm">Delete</button>
+            </form>
+            <?php endif; ?>
           </div>
         </td>
       </tr>

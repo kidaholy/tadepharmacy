@@ -750,6 +750,53 @@ function cancelPurchase(PDO $pdo, int $purchaseId, int $userId): void {
     }
 }
 
+/** Reasons why a purchase cannot be deleted (empty = safe to delete). */
+function purchaseDeleteBlockers(array $p): array {
+    $reasons = [];
+    $status = $p['status'] ?? '';
+    if ((float)($p['total_paid'] ?? 0) > 0.009) {
+        $reasons[] = 'This purchase has payments recorded. Cancel it instead so the payment history stays intact.';
+    }
+    if ((float)($p['total_returned'] ?? 0) > 0.009) {
+        $reasons[] = 'This purchase has returns recorded and cannot be deleted.';
+    }
+    // Received purchases touched inventory: deleting would silently erase stock
+    // that may already be sold, batch-priced or reported. Cancel reverses safely.
+    if ($status === 'received' && !empty($p['received_at'])) {
+        $reasons[] = 'Received purchases are already in inventory and cannot be deleted. Cancel the purchase instead.';
+    }
+    if ($status === 'cancelled') {
+        $reasons[] = 'Cancelled purchases are kept for audit purposes and cannot be deleted.';
+    }
+    return $reasons;
+}
+
+/** Permanently remove a draft/pending purchase that never touched inventory. */
+function deletePurchase(PDO $pdo, int $purchaseId): void {
+    $p = fetchPurchase($pdo, $purchaseId);
+    if (!$p) throw new RuntimeException('Purchase not found.');
+    $reasons = purchaseDeleteBlockers($p);
+    if ($reasons) {
+        throw new RuntimeException($reasons[0]);
+    }
+    $pdo->beginTransaction();
+    try {
+        // purchase_payments / purchase_returns are guarded by the blockers above;
+        // purchase_items cascade. Reap stray child rows first for old databases
+        // where the FK cascade may not exist yet.
+        $pdo->prepare("DELETE FROM purchase_payments WHERE purchase_id=?")->execute([$purchaseId]);
+        $pdo->prepare("DELETE FROM purchase_returns WHERE purchase_id=?")->execute([$purchaseId]);
+        $pdo->prepare("DELETE FROM purchase_return_items WHERE return_id NOT IN (SELECT id FROM purchase_returns)")->execute();
+        $pdo->prepare("DELETE FROM purchase_items WHERE purchase_id=?")->execute([$purchaseId]);
+        $pdo->prepare("DELETE FROM purchases WHERE id=?")->execute([$purchaseId]);
+        auditLog($pdo, 'delete', 'purchase', $purchaseId, ($p['purchase_number'] ?: $p['reference']) . ' ' . currency((float)($p['grand_total'] ?? $p['total_amount'] ?? 0)));
+        $pdo->commit();
+    } catch (Throwable $e) {
+        $pdo->rollBack();
+        throw $e;
+    }
+}
+
 function createPurchaseReturn(PDO $pdo, int $purchaseId, array $post, int $userId): int {
     $p = fetchPurchase($pdo, $purchaseId);
     if (!$p) throw new RuntimeException('Purchase not found.');

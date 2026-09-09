@@ -165,6 +165,46 @@ function formatExpiryDate(?string $date): string {
     return $ts ? date('M d, Y', $ts) : '—';
 }
 
+/**
+ * Whole days remaining until expiry (negative = already expired).
+ * Uses calendar days so it reads naturally: on the expiry day itself
+ * this returns 0 ("expires today"), and 30 means "30 days left".
+ */
+function expiryDaysRemaining(?string $date): ?int {
+    $date = trim((string) $date);
+    if ($date === '' || (int) substr($date, 0, 4) >= 9000) {
+        return null;
+    }
+    $ts = strtotime($date);
+    if (!$ts) {
+        return null;
+    }
+    $today = strtotime(date('Y-m-d'));
+    $expiry = strtotime(date('Y-m-d', $ts));
+    return (int) round(($expiry - $today) / 86400);
+}
+
+/** Human label for days until expiry, e.g. "30 days left" / "Expired 3 days ago". */
+function expiryDaysLabel(?string $date): string {
+    $days = expiryDaysRemaining($date);
+    if ($days === null) {
+        return '';
+    }
+    if ($days > 1) {
+        return $days . ' days left';
+    }
+    if ($days === 1) {
+        return '1 day left';
+    }
+    if ($days === 0) {
+        return 'Expires today';
+    }
+    if ($days === -1) {
+        return 'Expired yesterday';
+    }
+    return 'Expired ' . abs($days) . ' days ago';
+}
+
 function expiryTrackedSql(string $column = 'expiry_date'): string {
     return $column . " < '9000-01-01'";
 }

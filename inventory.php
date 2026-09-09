@@ -321,11 +321,14 @@ renderSidebar();
       <?php else: ?>
       <?php foreach ($batches as $b):
         $noExpiry = isNoExpiryDate($b['expiry_date'] ?? '');
+        $daysLabel = expiryDaysLabel($b['expiry_date'] ?? '');
+        $daysLeft = expiryDaysRemaining($b['expiry_date'] ?? '');
+        $daysColor = $daysLeft === null ? '' : ($daysLeft < 0 ? 'var(--danger)' : ($daysLeft <= 30 ? 'var(--warning)' : 'var(--text-300)'));
         if ($noExpiry) {
             $statusClass = 'badge-green';
             $statusLabel = 'No expiry';
         } else {
-            $days = (strtotime($b['expiry_date']) - time()) / 86400;
+            $days = (int)$daysLeft;
             if ($days < 0)        { $statusClass = 'badge-red';    $statusLabel = 'Expired'; }
             elseif ($days <= 7)   { $statusClass = 'badge-red';    $statusLabel = 'Critical'; }
             elseif ($days <= 30)  { $statusClass = 'badge-orange'; $statusLabel = 'Expiring'; }
@@ -350,7 +353,10 @@ renderSidebar();
         <td><span class="badge <?= $qtyClass ?>"><?= number_format($b['quantity']) ?> <?= htmlspecialchars($b['unit']) ?></span></td>
         <td style="color:var(--text-300);"><?= currency($b['purchase_price']) ?></td>
         <td style="color:var(--accent2);font-weight:700;"><?= currency($b['selling_price']) ?></td>
-        <td style="font-size:12px;"><?= formatExpiryDate($b['expiry_date']) ?></td>
+        <td style="font-size:12px;">
+          <?= formatExpiryDate($b['expiry_date']) ?>
+          <?php if ($daysLabel): ?><div style="margin-top:2px;font-size:11px;font-weight:600;color:<?= $daysColor ?>;"><?= htmlspecialchars($daysLabel) ?></div><?php endif; ?>
+        </td>
         <td style="font-size:12px;"><?= $warranty !== '' ? htmlspecialchars($warranty) : '—' ?></td>
         <td><span class="badge <?= $statusClass ?>"><?= $statusLabel ?></span></td>
         <td>
@@ -398,6 +404,9 @@ renderSidebar();
       <?php else: ?>
       <?php foreach ($stockRows as $r):
         $noExpiry = isNoExpiryDate($r['next_expiry'] ?? '');
+        $daysLabel = expiryDaysLabel($r['next_expiry'] ?? '');
+        $daysLeft = expiryDaysRemaining($r['next_expiry'] ?? '');
+        $daysColor = $daysLeft === null ? '' : ($daysLeft < 0 ? 'var(--danger)' : ($daysLeft <= 30 ? 'var(--warning)' : 'var(--text-300)'));
         if ((int)$r['stock'] === 0) {
             $statusClass = 'badge-gray';
             $statusLabel = 'Out';
@@ -405,7 +414,7 @@ renderSidebar();
             $statusClass = ((int)$r['stock'] <= (int)$r['reorder_level']) ? 'badge-orange' : 'badge-green';
             $statusLabel = ((int)$r['stock'] <= (int)$r['reorder_level']) ? 'Low' : 'Good';
         } else {
-            $days = (strtotime($r['next_expiry']) - time()) / 86400;
+            $days = (int)$daysLeft;
             if ($days < 0)        { $statusClass = 'badge-red';    $statusLabel = 'Expired'; }
             elseif ($days <= 7)   { $statusClass = 'badge-red';    $statusLabel = 'Critical'; }
             elseif ($days <= 30)  { $statusClass = 'badge-orange'; $statusLabel = 'Expiring'; }
@@ -419,7 +428,10 @@ renderSidebar();
         <td><span class="badge badge-gray" style="font-size:11px;"><?= htmlspecialchars($r['cat_name'] ?? '—') ?></span></td>
         <td><span class="badge badge-blue"><?= (int)$r['batch_count'] ?></span></td>
         <td><span class="badge <?= $qtyClass ?>"><?= number_format($r['stock']) ?> <?= htmlspecialchars($r['unit']) ?></span></td>
-        <td style="font-size:12px;"><?= formatExpiryDate($r['next_expiry'] ?? '') ?></td>
+        <td style="font-size:12px;">
+          <?= formatExpiryDate($r['next_expiry'] ?? '') ?>
+          <?php if ($daysLabel): ?><div style="margin-top:2px;font-size:11px;font-weight:600;color:<?= $daysColor ?>;"><?= htmlspecialchars($daysLabel) ?></div><?php endif; ?>
+        </td>
         <td><span class="badge <?= $statusClass ?>"><?= $statusLabel ?></span></td>
         <td>
           <div class="row-actions">
