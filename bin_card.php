@@ -2,6 +2,7 @@
 require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/sales_lib.php';
 require_once __DIR__ . '/report_lib.php';
+require_once __DIR__ . '/inventory_lib.php';
 
 $pdo  = getDB();
 $medId = (int)($_GET['id'] ?? 0);
@@ -12,7 +13,8 @@ $printMode = isset($_GET['print']);
 // Fetch product info
 $med = $pdo->prepare("
     SELECT m.*, COALESCE(c.name, 'Uncategorized') AS category_name,
-           COALESCE(m.product_type, 'medicine') AS product_type
+           COALESCE(m.product_type, 'medicine') AS product_type,
+           COALESCE(NULLIF(TRIM(m.brand_name), ''), m.name) AS brand_display
     FROM medicines m
     LEFT JOIN categories c ON c.id = m.category_id
     WHERE m.id = ?
@@ -22,88 +24,39 @@ $product = $med->fetch();
 if (!$product) { header('Location: inventory.php'); exit; }
 
 $currency = getSetting('currency', 'ETB');
-$day = reportLocalDateExpr('s');
+$pharmacyName = getSetting('pharmacy_name', 'TADE PHARMACY');
 
-// Stock movements: purchases (+), sales (-), returns (+)
-$movements = [];
+// Unified stock history (purchases, sales, returns, adjustments, purchase returns)
+$history = fetchStockHistory($pdo, $medId);
 
-// Purchases
-$purStmt = $pdo->prepare("
-    SELECT p.purchase_number, p.purchase_date AS date,
-           'Purchase' AS type,
-           pi.quantity, pi.purchase_price AS unit_cost,
-           COALESCE(sup.name, 'Unknown') AS reference_name
-    FROM purchase_items pi
-    JOIN purchases p ON p.id = pi.purchase_id
-    LEFT JOIN suppliers sup ON sup.id = p.supplier_id
-    WHERE pi.medicine_id = ?
-    ORDER BY p.purchase_date ASC
-");
-$purStmt->execute([$medId]);
-foreach ($purStmt->fetchAll() as $row) {
-    $movements[] = $row;
-}
+$typeLabels = [
+    'purchase' => 'Purchase',
+    'sale' => 'Sale',
+    'sale_return' => 'Return',
+    'purchase_return' => 'Purchase Return',
+    'adjustment' => 'Adjustment',
+    'deactivate' => 'Deactivate',
+];
 
-// Sales
-$salStmt = $pdo->prepare("
-    SELECT s.invoice_number, $day AS date,
-           'Sale' AS type,
-           si.quantity, si.unit_price AS unit_cost,
-           COALESCE(NULLIF(s.customer_name, ''), 'Walk-in') AS reference_name
-    FROM sale_items si
-    JOIN sales s ON s.id = si.sale_id
-    WHERE si.medicine_id = ?
-    ORDER BY s.created_at ASC
-");
-$salStmt->execute([$medId]);
-foreach ($salStmt->fetchAll() as $row) {
-    $movements[] = $row;
-}
-
-// Returns
-$retStmt = $pdo->prepare("
-    SELECT COALESCE(s.invoice_number, '—') AS invoice_number,
-           date(sr.created_at, '+3 hours') AS date,
-           'Return' AS type,
-           sr.quantity, sr.amount AS unit_cost,
-           COALESCE(sr.reason, 'Return') AS reference_name
-    FROM sale_returns sr
-    LEFT JOIN sales s ON s.id = sr.sale_id
-    WHERE sr.medicine_id = ?
-    ORDER BY sr.created_at ASC
-");
-$retStmt->execute([$medId]);
-foreach ($retStmt->fetchAll() as $row) {
-    $movements[] = $row;
-}
-
-// Sort all movements by date ascending
-usort($movements, fn($a, $b) => strcmp($a['date'] ?? '', $b['date'] ?? ''));
-
-// Calculate running balance
-$balance = 0;
-foreach ($movements as &$mv) {
-    if ($mv['type'] === 'Purchase' || $mv['type'] === 'Return') {
-        $balance += (int)$mv['quantity'];
-    } else {
-        $balance -= (int)$mv['quantity'];
-    }
-    $mv['balance'] = $balance;
-}
-unset($mv);
-
-// Batch summary
+// Batch summary (active only for on-hand view)
 $batches = $pdo->prepare("
     SELECT b.*, COALESCE(sup.name, 'Unknown') AS supplier_name
     FROM batches b
     LEFT JOIN suppliers sup ON sup.id = b.supplier_id
-    WHERE b.medicine_id = ?
+    WHERE b.medicine_id = ? AND COALESCE(b.status,'active')='active'
     ORDER BY b.expiry_date ASC
 ");
 $batches->execute([$medId]);
 $batches = $batches->fetchAll();
 
 $totalStock = array_sum(array_column($batches, 'quantity'));
+$opening = 0;
+$closing = $totalStock;
+if (!empty($history)) {
+    $first = $history[0];
+    $opening = (int)$first['balance'] - (int)$first['qty_in'] + (int)$first['qty_out'];
+    $closing = (int)$history[count($history) - 1]['balance'];
+}
 
 if ($printMode):
 ?>
@@ -118,6 +71,7 @@ if ($printMode):
   .header { text-align: center; border-bottom: 2px solid #000; padding-bottom: 10px; margin-bottom: 10px; }
   .header h1 { font-size: 16px; text-transform: uppercase; }
   .header h2 { font-size: 14px; margin-top: 4px; }
+  .header .pharmacy { font-size: 13px; font-weight: bold; margin-bottom: 4px; }
   .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 12px; border: 1px solid #000; padding: 8px; }
   .info-grid span { font-weight: bold; }
   table { width: 100%; border-collapse: collapse; margin-bottom: 14px; }
@@ -133,17 +87,22 @@ if ($printMode):
 </head>
 <body>
 <div class="header">
+  <div class="pharmacy"><?= htmlspecialchars($pharmacyName) ?></div>
   <h1>Bin Card / Stock Card</h1>
   <h2><?= htmlspecialchars($product['name']) ?></h2>
 </div>
 
 <div class="info-grid">
+  <div><span>Generic:</span> <?= htmlspecialchars($product['generic_name'] ?: '—') ?></div>
+  <div><span>Brand:</span> <?= htmlspecialchars($product['brand_display']) ?></div>
   <div><span>Category:</span> <?= htmlspecialchars($product['category_name']) ?></div>
   <div><span>Product Type:</span> <?= htmlspecialchars(ucfirst($product['product_type'])) ?></div>
   <div><span>Unit:</span> <?= htmlspecialchars($product['unit']) ?></div>
   <div><span>Reorder Level:</span> <?= number_format($product['reorder_level']) ?></div>
-  <div><span>Current Stock:</span> <?= number_format($totalStock) ?> <?= htmlspecialchars($product['unit']) ?></div>
+  <div><span>Opening Balance:</span> <?= number_format($opening) ?></div>
+  <div><span>Closing / Current:</span> <?= number_format($closing) ?> <?= htmlspecialchars($product['unit']) ?></div>
   <div><span>Active Batches:</span> <?= count($batches) ?></div>
+  <div><span>Printed:</span> <?= date('M j, Y H:i') ?></div>
 </div>
 
 <!-- Batch Summary -->
@@ -184,38 +143,38 @@ if ($printMode):
 <strong>Stock Movement History</strong>
 <table>
   <thead>
-    <tr><th>Date</th><th>Type</th><th>Reference</th><th>From/To</th><th>Qty In</th><th>Qty Out</th><th>Unit Cost</th><th>Balance</th></tr>
+    <tr><th>Date</th><th>Type</th><th>Batch</th><th>Reference</th><th>Reason</th><th>Qty In</th><th>Qty Out</th><th>Balance</th><th>User</th></tr>
   </thead>
   <tbody>
-  <?php foreach ($movements as $mv):
-    $isIn = ($mv['type'] === 'Purchase' || $mv['type'] === 'Return');
-    $ref = $mv['invoice_number'] ?? '—';
-    $party = $mv['reference_name'] ?? '—';
+  <?php foreach ($history as $mv):
+    $isIn = (int)$mv['qty_in'] > 0;
+    $label = $typeLabels[$mv['type']] ?? ucfirst(str_replace('_', ' ', (string)$mv['type']));
   ?>
     <tr>
-      <td><?= htmlspecialchars($mv['date'] ?? '—') ?></td>
-      <td><?= $mv['type'] ?></td>
-      <td><?= htmlspecialchars($ref) ?></td>
-      <td><?= htmlspecialchars($party) ?></td>
-      <td class="<?= $isIn ? 'stock-in' : '' ?>"><?= $isIn ? number_format($mv['quantity']) : '' ?></td>
-      <td class="<?= !$isIn ? 'stock-out' : '' ?>"><?= !$isIn ? number_format($mv['quantity']) : '' ?></td>
-      <td><?= currency((float)($mv['unit_cost'] ?? 0)) ?></td>
-      <td style="font-weight:bold;"><?= number_format($mv['balance']) ?></td>
+      <td><?= htmlspecialchars(substr((string)($mv['date'] ?? ''), 0, 19)) ?></td>
+      <td><?= htmlspecialchars($label) ?></td>
+      <td><?= htmlspecialchars($mv['batch_number'] ?: '—') ?></td>
+      <td><?= htmlspecialchars($mv['reference'] ?: '—') ?></td>
+      <td><?= htmlspecialchars($mv['reason'] ?: '—') ?></td>
+      <td class="<?= $isIn ? 'stock-in' : '' ?>"><?= $isIn ? number_format((int)$mv['qty_in']) : '' ?></td>
+      <td class="<?= !$isIn && (int)$mv['qty_out'] > 0 ? 'stock-out' : '' ?>"><?= (int)$mv['qty_out'] > 0 ? number_format((int)$mv['qty_out']) : '' ?></td>
+      <td style="font-weight:bold;"><?= number_format((int)$mv['balance']) ?></td>
+      <td><?= htmlspecialchars($mv['user'] ?: '—') ?></td>
     </tr>
   <?php endforeach; ?>
-  <?php if (empty($movements)): ?>
-    <tr><td colspan="8" style="text-align:center;">No stock movements on record</td></tr>
+  <?php if (empty($history)): ?>
+    <tr><td colspan="9" style="text-align:center;">No stock movements on record</td></tr>
   <?php endif; ?>
   <tr class="totals">
-    <td colspan="4" style="text-align:right;">Current Stock:</td>
-    <td><?= number_format($totalStock) ?></td>
-    <td colspan="3"></td>
+    <td colspan="5" style="text-align:right;">Current Stock:</td>
+    <td colspan="2"><?= number_format($totalStock) ?> <?= htmlspecialchars($product['unit']) ?></td>
+    <td colspan="2"></td>
   </tr>
   </tbody>
 </table>
 
 <div class="footer">
-  Printed: <?= date('M j, Y H:i') ?> · <?= htmlspecialchars(getSetting('pharmacy_name', 'TADE PHARMACY')) ?>
+  Printed: <?= date('M j, Y H:i') ?> · <?= htmlspecialchars($pharmacyName) ?>
 </div>
 
 <script>window.onload = function() { window.print(); };</script>
@@ -223,7 +182,8 @@ if ($printMode):
 </html>
 <?php exit; endif; ?>
 
-<?php renderHead('Bin Card — ' . $product['name'], 'print-80mm'); ?>
+<?php
+renderHead('Bin Card — ' . $product['name'], 'print-80mm');
 renderSidebar();
 ?>
 <div id="sidebarOverlay" class="overlay-bg" onclick="toggleSidebar()"></div>
@@ -233,6 +193,7 @@ renderSidebar();
 
 <div style="display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap;align-items:center;">
   <a href="inventory.php?med=<?= $medId ?>" class="btn btn-ghost btn-sm"><i data-lucide="arrow-left"></i> Back to Inventory</a>
+  <a href="stock_history.php?id=<?= $medId ?>" class="btn btn-ghost btn-sm"><i data-lucide="history"></i> Stock History</a>
   <h2 style="font-size:18px;font-weight:700;flex:1;"><?= htmlspecialchars($product['name']) ?></h2>
   <a href="bin_card.php?id=<?= $medId ?>&print" target="_blank" class="btn btn-primary btn-sm"><i data-lucide="printer"></i> Print Bin Card</a>
 </div>
@@ -242,7 +203,16 @@ renderSidebar();
   <div class="stat-card blue"><div class="stat-icon blue"><i data-lucide="package"></i></div><div><div class="stat-label">Current Stock</div><div class="stat-value"><?= number_format($totalStock) ?></div><div class="stat-sub"><?= htmlspecialchars($product['unit']) ?></div></div></div>
   <div class="stat-card orange"><div class="stat-icon orange"><i data-lucide="layers"></i></div><div><div class="stat-label">Active Batches</div><div class="stat-value"><?= count($batches) ?></div></div></div>
   <div class="stat-card green"><div class="stat-icon green"><i data-lucide="tag"></i></div><div><div class="stat-label">Reorder Level</div><div class="stat-value"><?= number_format($product['reorder_level']) ?></div></div></div>
-  <div class="stat-card red"><div class="stat-icon red"><i data-lucide="shopping-cart"></i></div><div><div class="stat-label">Total Movements</div><div class="stat-value"><?= count($movements) ?></div></div></div>
+  <div class="stat-card red"><div class="stat-icon red"><i data-lucide="shopping-cart"></i></div><div><div class="stat-label">Total Movements</div><div class="stat-value"><?= count($history) ?></div></div></div>
+</div>
+
+<div class="card mb-20" style="padding:14px 16px;">
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;font-size:13px;">
+    <div><span style="color:var(--text-300);">Generic</span><div style="font-weight:600;"><?= htmlspecialchars($product['generic_name'] ?: '—') ?></div></div>
+    <div><span style="color:var(--text-300);">Brand</span><div style="font-weight:600;"><?= htmlspecialchars($product['brand_display']) ?></div></div>
+    <div><span style="color:var(--text-300);">Category</span><div style="font-weight:600;"><?= htmlspecialchars($product['category_name']) ?></div></div>
+    <div><span style="color:var(--text-300);">Opening → Closing</span><div style="font-weight:600;"><?= number_format($opening) ?> → <?= number_format($closing) ?></div></div>
+  </div>
 </div>
 
 <!-- Batch Summary -->
@@ -286,27 +256,28 @@ renderSidebar();
   <div class="card-header"><span class="card-title">Stock Movement History</span></div>
   <div class="table-wrap">
     <table>
-      <thead><tr><th>Date</th><th>Type</th><th>Reference</th><th>From/To</th><th>Qty In</th><th>Qty Out</th><th>Balance</th></tr></thead>
+      <thead><tr><th>Date</th><th>Type</th><th>Batch</th><th>Reference</th><th>Reason</th><th>Qty In</th><th>Qty Out</th><th>Balance</th><th>User</th></tr></thead>
       <tbody>
-      <?php foreach ($movements as $mv):
-        $isIn = ($mv['type'] === 'Purchase' || $mv['type'] === 'Return');
-        $ref = $mv['invoice_number'] ?? '—';
-        $party = $mv['reference_name'] ?? '—';
+      <?php foreach ($history as $mv):
+        $isIn = (int)$mv['qty_in'] > 0;
+        $label = $typeLabels[$mv['type']] ?? ucfirst(str_replace('_', ' ', (string)$mv['type']));
         $typeColor = $isIn ? 'var(--accent2)' : 'var(--danger)';
-        $typeIcon = $mv['type'] === 'Purchase' ? 'arrow-down' : ($mv['type'] === 'Return' ? 'rotate-ccw' : 'arrow-up');
+        $typeIcon = $isIn ? 'arrow-down' : 'arrow-up';
       ?>
       <tr>
-        <td style="font-size:12px;"><?= htmlspecialchars($mv['date'] ?? '—') ?></td>
-        <td><span style="color:<?= $typeColor ?>;font-weight:600;"><i data-lucide="<?= $typeIcon ?>" style="width:14px;height:14px;display:inline;"></i> <?= $mv['type'] ?></span></td>
-        <td><code style="font-size:12px;"><?= htmlspecialchars($ref) ?></code></td>
-        <td style="font-size:12px;"><?= htmlspecialchars($party) ?></td>
-        <td style="color:var(--accent2);font-weight:700;"><?= $isIn ? number_format($mv['quantity']) : '' ?></td>
-        <td style="color:var(--danger);font-weight:700;"><?= !$isIn ? number_format($mv['quantity']) : '' ?></td>
-        <td style="font-weight:700;"><?= number_format($mv['balance']) ?></td>
+        <td style="font-size:12px;"><?= htmlspecialchars(substr((string)($mv['date'] ?? ''), 0, 19)) ?></td>
+        <td><span style="color:<?= $typeColor ?>;font-weight:600;"><i data-lucide="<?= $typeIcon ?>" style="width:14px;height:14px;display:inline;"></i> <?= htmlspecialchars($label) ?></span></td>
+        <td><code style="font-size:12px;"><?= htmlspecialchars($mv['batch_number'] ?: '—') ?></code></td>
+        <td style="font-size:12px;"><?= htmlspecialchars($mv['reference'] ?: '—') ?></td>
+        <td style="font-size:12px;color:var(--text-300);"><?= htmlspecialchars($mv['reason'] ?: '—') ?></td>
+        <td style="color:var(--accent2);font-weight:700;"><?= $isIn ? number_format((int)$mv['qty_in']) : '' ?></td>
+        <td style="color:var(--danger);font-weight:700;"><?= (int)$mv['qty_out'] > 0 ? number_format((int)$mv['qty_out']) : '' ?></td>
+        <td style="font-weight:700;"><?= number_format((int)$mv['balance']) ?></td>
+        <td style="font-size:12px;"><?= htmlspecialchars($mv['user'] ?: '—') ?></td>
       </tr>
       <?php endforeach; ?>
-      <?php if (empty($movements)): ?>
-      <tr><td colspan="7" style="text-align:center;padding:20px;color:var(--text-300);">No stock movements on record</td></tr>
+      <?php if (empty($history)): ?>
+      <tr><td colspan="9" style="text-align:center;padding:20px;color:var(--text-300);">No stock movements on record</td></tr>
       <?php endif; ?>
       </tbody>
     </table>

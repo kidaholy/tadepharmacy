@@ -205,44 +205,75 @@ function expiryDaysLabel(?string $date): string {
     return 'Expired ' . abs($days) . ' days ago';
 }
 
-/** Day-window presets for Expiring Soon lists (Today / Week / Month / …). */
+/** Day-window presets for Expiring Soon lists (Today / Week / Month / … / Custom). */
 function expiryWithinPresets(): array {
     return [
-        'today' => ['label' => 'Today',      'days' => 0],
-        '7'     => ['label' => 'This Week',  'days' => 7],
-        '30'    => ['label' => 'This Month', 'days' => 30],
-        '90'    => ['label' => '3 Months',   'days' => 90],
-        '180'   => ['label' => '6 Months',   'days' => 180],
-        '365'   => ['label' => '1 Year',     'days' => 365],
+        'today'  => ['label' => 'Today',      'days' => 0],
+        '7'      => ['label' => 'This Week',  'days' => 7],
+        '30'     => ['label' => 'This Month', 'days' => 30],
+        '90'     => ['label' => '3 Months',   'days' => 90],
+        '180'    => ['label' => '6 Months',   'days' => 180],
+        '365'    => ['label' => '1 Year',     'days' => 365],
+        'custom' => ['label' => 'Custom Range', 'days' => -1],
     ];
 }
 
 /**
- * Resolve a within= preset key to ['key','label','days'].
+ * Resolve a within= preset key to ['key','label','days','from','to'].
  * Default is 30 days (This Month) to match the historical Expiring Soon window.
+ * Custom range uses from_date / to_date query params.
  */
-function expiryWithinParse(?string $key, string $default = '30'): array {
+function expiryWithinParse(?string $key, string $default = '30', ?string $from = null, ?string $to = null): array {
     $presets = expiryWithinPresets();
     $key = trim((string)$key);
     if ($key === '' || !isset($presets[$key])) {
         $key = $default;
     }
+    $from = trim((string)$from);
+    $to = trim((string)$to);
+    if ($key === 'custom') {
+        if ($from === '' || $to === '') {
+            // Fall back to this month if custom dates missing
+            return [
+                'key'   => '30',
+                'label' => $presets['30']['label'],
+                'days'  => 30,
+                'from'  => '',
+                'to'    => '',
+            ];
+        }
+        return [
+            'key'   => 'custom',
+            'label' => $from . ' → ' . $to,
+            'days'  => -1,
+            'from'  => $from,
+            'to'    => $to,
+        ];
+    }
     return [
         'key'   => $key,
         'label' => $presets[$key]['label'],
         'days'  => (int)$presets[$key]['days'],
+        'from'  => '',
+        'to'    => '',
     ];
 }
 
 /**
  * SQL condition: tracked expiry date falls within the next N days (inclusive),
  * with quantity still on hand. $alias is the batches table alias (e.g. 'b' or '').
+ * For custom ranges, pass $from/$to as Y-m-d.
  */
-function expiryWithinSql(string $alias = 'b', int $days = 30): string {
-    $days = max(0, min(3650, (int)$days));
+function expiryWithinSql(string $alias = 'b', int $days = 30, string $from = '', string $to = ''): string {
     $prefix = $alias !== '' ? ($alias . '.') : '';
     $col = $prefix . 'expiry_date';
     $qty = $prefix . 'quantity';
+    if ($from !== '' && $to !== '') {
+        $from = preg_replace('/[^0-9\-]/', '', $from);
+        $to = preg_replace('/[^0-9\-]/', '', $to);
+        return "{$col} BETWEEN '{$from}' AND '{$to}' AND {$qty} > 0 AND {$col} < '9000-01-01'";
+    }
+    $days = max(0, min(3650, (int)$days));
     return "{$col} BETWEEN date('now') AND date('now', '+{$days} days') AND {$qty} > 0 AND {$col} < '9000-01-01'";
 }
 
@@ -276,6 +307,7 @@ function paymentStatusLabel(string $status): string {
         'paid'    => 'Paid',
         'partial' => 'Partially Paid',
         'unpaid'  => 'Unpaid (Credit)',
+        'voided'  => 'VOID',
         default   => ucfirst($status),
     };
 }
@@ -285,6 +317,7 @@ function paymentStatusBadge(string $status): string {
         'paid'    => 'badge-green',
         'partial' => 'badge-orange',
         'unpaid'  => 'badge-red',
+        'voided'  => 'badge-gray',
         default   => 'badge-gray',
     };
 }

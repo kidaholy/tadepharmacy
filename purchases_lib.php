@@ -1576,7 +1576,8 @@ function quickCreateProduct(PDO $pdo, array $post): array {
  * cosmetic / equipment). Used by the "＋ Add Category" option on the purchase screen.
  */
 function quickCreateCategory(PDO $pdo, array $post): array {
-    $name = trim($post['name'] ?? '');
+    require_once __DIR__ . '/inventory_lib.php';
+    $name = canonicalizeCategoryName(trim($post['name'] ?? ''));
     $type = trim($post['product_type'] ?? 'medicine');
     if (!isset(productTypes()[$type])) $type = 'medicine';
     if ($name === '') {

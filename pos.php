@@ -39,6 +39,26 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $amountPaidIn = max(0, (float)($_POST['amount_paid'] ?? 0));
     $items        = json_decode($_POST['cart_json'] ?? '[]', true);
 
+    // Optional backdated sale (Africa/Addis_Ababa → store as UTC to match CURRENT_TIMESTAMP / reports)
+    $saleAt = null;
+    $enteredAt = gmdate('Y-m-d H:i:s');
+    if (can('sales.backdate') && trim($_POST['sale_date'] ?? '') !== '') {
+        $saleDate = trim($_POST['sale_date']);
+        $saleTime = trim($_POST['sale_time'] ?? '');
+        if ($saleTime === '') $saleTime = date('H:i');
+        if (preg_match('/^\d{4}-\d{2}-\d{2}$/', $saleDate) && preg_match('/^\d{1,2}:\d{2}$/', $saleTime)) {
+            $tz = new DateTimeZone('Africa/Addis_Ababa');
+            $dt = DateTime::createFromFormat('Y-m-d H:i', $saleDate . ' ' . $saleTime, $tz);
+            if ($dt instanceof DateTime) {
+                $dt->setTimezone(new DateTimeZone('UTC'));
+                $saleAt = $dt->format('Y-m-d H:i:s');
+            }
+        }
+    }
+    if ($saleAt === null) {
+        $saleAt = $enteredAt;
+    }
+
     if (!isset($payMethods[$payment])) {
         $error = 'Invalid payment method selected.';
     } elseif (empty($items) || !is_array($items)) {
@@ -102,8 +122,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         total_amount, discount, tax, paid_amount, remaining_balance,
                         payment_method, payment_status, payment_reference,
                         notes, credit_notes, user_id, sale_type,
-                        due_date, credit_due_date
-                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        due_date, credit_due_date,
+                        sale_at, entered_at, created_at, status
+                    ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 ")->execute([
                     $invoice, $customerId ?: null, $custName, $custPhone,
                     $subtotal, $discount, $tax, $paid, $remaining,
@@ -111,6 +132,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $allNotes, $creditNotes ?: null, $cashierId, $saleType,
                     $payment === 'credit' ? $dueDate : null,
                     $payment === 'credit' ? $dueDate : null,
+                    $saleAt, $enteredAt, $enteredAt, 'active',
                 ]);
                 $saleId = (int)$pdo->lastInsertId();
 
@@ -323,6 +345,20 @@ renderSidebar();
           <label style="margin-bottom:4px;">Sale Notes</label>
           <input type="text" name="notes" placeholder="Optional" style="padding:8px 12px;font-size:13px;">
         </div>
+
+        <?php if (can('sales.backdate')): ?>
+        <div class="form-group" style="margin-bottom:10px;padding:10px 12px;background:var(--bg-700);border-radius:8px;">
+          <label style="margin-bottom:6px;display:block;font-size:12px;">Actual sale date (for forgotten sales)</label>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <div style="flex:1;min-width:120px;">
+              <input type="date" name="sale_date" value="<?= htmlspecialchars(businessToday()) ?>" style="padding:8px 12px;font-size:13px;width:100%;">
+            </div>
+            <div style="min-width:100px;">
+              <input type="time" name="sale_time" value="<?= htmlspecialchars(date('H:i')) ?>" style="padding:8px 12px;font-size:13px;width:100%;">
+            </div>
+          </div>
+        </div>
+        <?php endif; ?>
 
         <div class="pos-total-row" style="margin-bottom:12px;font-size:12px;color:var(--text-300);">
           <span>Amount due</span>

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/layout.php';
 require_once __DIR__ . '/sales_lib.php';
+require_once __DIR__ . '/inventory_lib.php';
 
 $pdo    = getDB();
 $q      = trim($_GET['q'] ?? '');
@@ -15,17 +16,19 @@ if ($from === '' && $to === '') {
 }
 $page    = max(1, (int)($_GET['page'] ?? 1));
 $perPage = 50;
+$saleDateExpr = "date(COALESCE(s.sale_at, s.created_at), '+3 hours')";
 
-// Handle delete first (PRG)
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'delete') {
+// Void sale (PRG) — replaces hard delete
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['act'] ?? '') === 'void') {
     $did = (int)($_POST['id'] ?? 0);
-    $sitems = $pdo->prepare("SELECT * FROM sale_items WHERE sale_id=?");
-    $sitems->execute([$did]);
-    foreach ($sitems->fetchAll() as $si) {
-        $pdo->prepare("UPDATE batches SET quantity = quantity + ? WHERE id=?")->execute([$si['quantity'], $si['batch_id']]);
+    if (!can('sales.void')) {
+        flashSet('error', 'You do not have permission to void sales.');
+    } else {
+        $reason = trim($_POST['reason'] ?? '');
+        if ($reason === '') $reason = 'Deleted from sales list';
+        $result = voidSale($pdo, $did, $reason, (int)(currentUser()['id'] ?? 0));
+        flashSet($result['ok'] ? 'success' : 'error', $result['ok'] ? $result['message'] : $result['error']);
     }
-    $pdo->prepare("DELETE FROM sales WHERE id=?")->execute([$did]);
-    flashSet('success', 'Sale deleted and stock restored.');
     header('Location: sales.php');
     exit;
 }
@@ -42,12 +45,13 @@ if ($q !== '') {
         ))";
     for ($i = 0; $i < 6; $i++) $params[] = "%$q%";
 }
-if ($from) { $where[] = "date(s.created_at, '+3 hours') >= ?"; $params[] = $from; }
-if ($to)   { $where[] = "date(s.created_at, '+3 hours') <= ?"; $params[] = $to; }
+if ($from) { $where[] = "$saleDateExpr >= ?"; $params[] = $from; }
+if ($to)   { $where[] = "$saleDateExpr <= ?"; $params[] = $to; }
 if ($method) { $where[] = "s.payment_method = ?"; $params[] = $method; }
-if ($status === 'paid')        $where[] = "s.payment_status = 'paid'";
-elseif ($status === 'unpaid')  $where[] = "s.payment_status IN ('unpaid','partial')";
-elseif ($status === 'credit')  $where[] = "(s.sale_type = 'credit' OR s.payment_method = 'credit')";
+if ($status === 'paid')        $where[] = "s.payment_status = 'paid' AND COALESCE(s.status,'active') != 'voided'";
+elseif ($status === 'unpaid')  $where[] = "s.payment_status IN ('unpaid','partial') AND COALESCE(s.status,'active') != 'voided'";
+elseif ($status === 'credit')  $where[] = "(s.sale_type = 'credit' OR s.payment_method = 'credit') AND COALESCE(s.status,'active') != 'voided'";
+elseif ($status === 'voided')  $where[] = "(s.status = 'voided' OR s.payment_status = 'voided')";
 $whereSql = $where ? (' WHERE ' . implode(' AND ', $where)) : '';
 
 $sumStmt = $pdo->prepare("
@@ -83,7 +87,7 @@ $totalPages = max(1, (int)ceil($totalSales / $perPage));
 if ($page > $totalPages) $page = $totalPages;
 $offset = ($page - 1) * $perPage;
 
-$sql = "SELECT s.* FROM sales s $whereSql ORDER BY s.created_at DESC LIMIT $perPage OFFSET $offset";
+$sql = "SELECT s.* FROM sales s $whereSql ORDER BY COALESCE(s.sale_at, s.created_at) DESC LIMIT $perPage OFFSET $offset";
 $stmt = $pdo->prepare($sql);
 $stmt->execute($params);
 $sales = $stmt->fetchAll();
@@ -115,6 +119,7 @@ $pagerBase = 'sales.php?' . http_build_query(array_filter([
 
 $flash = flashGet();
 $msg = ($flash && $flash['type'] === 'success') ? $flash['message'] : '';
+$err = ($flash && $flash['type'] === 'error') ? $flash['message'] : '';
 
 $methods = posPaymentMethods();
 $totalCollected = (float)$sum['collected'];
@@ -130,6 +135,7 @@ renderSidebar();
 <div class="page-body">
 
 <?php if ($msg): ?><div class="alert alert-success auto-hide"><i data-lucide="check-circle"></i><?= htmlspecialchars($msg) ?></div><?php endif; ?>
+<?php if ($err): ?><div class="alert alert-danger"><i data-lucide="alert-circle"></i><?= htmlspecialchars($err) ?></div><?php endif; ?>
 
 <div class="card mb-20">
   <div class="card-header"><span class="card-title">Filter Daily Sales</span></div>
@@ -162,6 +168,7 @@ renderSidebar();
         <option value="paid" <?= $status === 'paid' ? 'selected' : '' ?>>Paid</option>
         <option value="unpaid" <?= $status === 'unpaid' ? 'selected' : '' ?>>Unpaid / Partial</option>
         <option value="credit" <?= $status === 'credit' ? 'selected' : '' ?>>Credit</option>
+        <option value="voided" <?= $status === 'voided' ? 'selected' : '' ?>>Voided</option>
       </select>
     </div>
     <button type="submit" class="btn btn-primary" style="margin-bottom:1px;">Filter</button>
@@ -248,9 +255,12 @@ renderSidebar();
       <?php else: ?>
       <?php foreach ($sales as $s):
         $net = saleNetAmount($s);
-        $status = $s['payment_status'] ?? computePaymentStatus($net, (float)$s['paid_amount'], $s['payment_method']);
+        $rowStatus = $s['payment_status'] ?? computePaymentStatus($net, (float)$s['paid_amount'], $s['payment_method']);
+        $isVoided = (($s['status'] ?? 'active') === 'voided') || ($rowStatus === 'voided');
+        if ($isVoided) $rowStatus = 'voided';
         $payLbl = $methods[$s['payment_method']] ?? ucfirst($s['payment_method']);
-        $overdue = isSaleOverdue($s);
+        $overdue = !$isVoided && isSaleOverdue($s);
+        $displayAt = $s['sale_at'] ?? $s['created_at'];
         $lineLabels = [];
         foreach ($itemsBySale[(int)$s['id']] ?? [] as $it) {
             $lineLabels[] = htmlspecialchars(trim($it['name'] . ($it['strength'] ? ' ' . $it['strength'] : ''))) . ' × ' . (int)$it['quantity'];
@@ -258,13 +268,16 @@ renderSidebar();
         $shown = array_slice($lineLabels, 0, 2);
         $more = count($lineLabels) - 2;
       ?>
-      <tr style="<?= $overdue ? 'background:rgba(242,95,92,0.06);' : '' ?>">
-        <td style="font-size:12px;white-space:nowrap;"><?= date('M d, Y', strtotime($s['created_at'])) ?><br><small style="color:var(--text-300);"><?= date('H:i', strtotime($s['created_at'])) ?></small></td>
+      <tr style="<?= $overdue ? 'background:rgba(242,95,92,0.06);' : ($isVoided ? 'opacity:0.72;' : '') ?>">
+        <td style="font-size:12px;white-space:nowrap;"><?= date('M d, Y', strtotime($displayAt)) ?><br><small style="color:var(--text-300);"><?= date('H:i', strtotime($displayAt)) ?></small></td>
         <td>
           <?php if ($s['customer_id']): ?>
           <a href="customers.php?id=<?= $s['customer_id'] ?>" style="color:inherit;font-weight:600;"><?= htmlspecialchars($s['customer_name']) ?></a>
           <?php else: ?>
           <?= htmlspecialchars($s['customer_name']) ?>
+          <?php endif; ?>
+          <?php if ($isVoided): ?>
+          <div><span class="badge badge-gray" style="margin-top:4px;">VOID</span></div>
           <?php endif; ?>
         </td>
         <td style="font-size:12px;line-height:1.6;">
@@ -278,16 +291,19 @@ renderSidebar();
         <td style="text-align:center;"><?= count($lineLabels) ?></td>
         <td style="font-weight:700;color:var(--accent2);"><?= currency($net) ?></td>
         <td><span class="badge badge-gray"><?= htmlspecialchars($payLbl) ?></span></td>
-        <td><span class="badge <?= paymentStatusBadge($status) ?>"><?= paymentStatusLabel($status) ?><?= $overdue ? ' · Overdue' : '' ?></span></td>
+        <td><span class="badge <?= paymentStatusBadge($rowStatus) ?>"><?= paymentStatusLabel($rowStatus) ?><?= $overdue ? ' · Overdue' : '' ?></span></td>
         <td>
           <div class="row-actions">
             <a href="sale_details.php?id=<?= $s['id'] ?>" class="btn btn-ghost btn-sm">Details</a>
             <a href="receipt.php?id=<?= $s['id'] ?>" class="btn btn-ghost btn-sm">Receipt</a>
-            <form method="POST" onsubmit="return confirm('Delete this sale and restore stock?')">
-              <input type="hidden" name="act" value="delete">
+            <?php if (!$isVoided && can('sales.void')): ?>
+            <form method="POST" onsubmit="var r=prompt('Reason for voiding this sale:'); if(!r||!r.trim()) return false; this.reason.value=r.trim(); return true;">
+              <input type="hidden" name="act" value="void">
               <input type="hidden" name="id" value="<?= $s['id'] ?>">
-              <button type="submit" class="btn btn-danger btn-sm">Del</button>
+              <input type="hidden" name="reason" value="">
+              <button type="submit" class="btn btn-danger btn-sm">Void</button>
             </form>
+            <?php endif; ?>
           </div>
         </td>
       </tr>

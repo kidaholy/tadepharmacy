@@ -10,8 +10,12 @@ function permissionCatalog(): array {
             'medicines.manage' => 'Add, Edit & Delete Medicines',
         ],
         'Sales' => [
-            'sales.view'   => 'View Sales History',
-            'sales.manage' => 'Manage Sales & Returns',
+            'sales.view'      => 'View Sales History',
+            'sales.manage'    => 'Manage Sales & Returns',
+            'sales.edit'      => 'Edit / Correct Sales',
+            'sales.backdate'  => 'Backdated Sales',
+            'sales.void'      => 'Void Sales',
+            'sales.returns'   => 'Product Returns',
         ],
         'Customers' => [
             'customers.view'   => 'View Customers',
@@ -30,11 +34,17 @@ function permissionCatalog(): array {
             'suppliers.manage' => 'Manage Suppliers',
         ],
         'Inventory' => [
-            'inventory.view'   => 'View Inventory & Stock',
-            'inventory.manage' => 'Adjust Stock & Batches',
+            'inventory.view'            => 'View Inventory',
+            'inventory.edit'            => 'Edit Inventory',
+            'inventory.change_sell'     => 'Change Selling Price',
+            'inventory.change_buy'      => 'Change Purchase Price',
+            'inventory.adjust'          => 'Stock Adjustment',
+            'inventory.delete'          => 'Delete / Deactivate Inventory',
+            'inventory.manage'          => 'Adjust Stock & Batches (legacy)',
         ],
         'Reports' => [
-            'reports.view' => 'View & Export Reports',
+            'reports.view'   => 'View Reports',
+            'reports.export' => 'Export Reports',
         ],
         'Settings' => [
             'settings.view'   => 'View Settings',
@@ -129,9 +139,12 @@ function seedPermissionsAndRoles(PDO $pdo): void {
     if ($managerRoleId) {
         seedRolePermissionsIfEmpty($pdo, $managerRoleId, allowPermissions([
             'dashboard.view', 'medicines.view', 'medicines.manage',
-            'sales.view', 'sales.manage', 'customers.view', 'customers.manage',
+            'sales.view', 'sales.manage', 'sales.edit', 'sales.backdate', 'sales.void', 'sales.returns',
+            'customers.view', 'customers.manage',
             'pos.access', 'purchases.view', 'purchases.manage',
-            'inventory.view', 'inventory.manage', 'reports.view',
+            'inventory.view', 'inventory.edit', 'inventory.change_sell', 'inventory.change_buy',
+            'inventory.adjust', 'inventory.delete', 'inventory.manage',
+            'reports.view', 'reports.export',
             'settings.view', 'settings.manage',
         ]));
     }
@@ -139,8 +152,8 @@ function seedPermissionsAndRoles(PDO $pdo): void {
     if ($pharmacistRoleId) {
         seedRolePermissionsIfEmpty($pdo, $pharmacistRoleId, allowPermissions([
             'dashboard.view', 'medicines.view', 'medicines.manage',
-            'sales.view', 'customers.view', 'pos.access',
-            'purchases.view', 'inventory.view', 'inventory.manage',
+            'sales.view', 'sales.returns', 'customers.view', 'pos.access',
+            'purchases.view', 'inventory.view', 'inventory.edit', 'inventory.adjust', 'inventory.manage',
             'reports.view',
         ]));
     }
@@ -150,6 +163,7 @@ function seedPermissionsAndRoles(PDO $pdo): void {
             'pos.access',
             'sales.view', 'sales.manage',
             'customers.view', 'customers.manage',
+            'inventory.view',
         ]));
     }
 
@@ -158,7 +172,7 @@ function seedPermissionsAndRoles(PDO $pdo): void {
             'dashboard.view', 'medicines.view', 'medicines.manage',
             'sales.view', 'sales.manage', 'customers.view', 'customers.manage',
             'pos.access', 'purchases.view', 'purchases.manage',
-            'inventory.view', 'inventory.manage', 'reports.view',
+            'inventory.view', 'inventory.edit', 'inventory.manage', 'reports.view',
         ]));
     }
 
@@ -174,16 +188,27 @@ function seedPermissionsAndRoles(PDO $pdo): void {
         grantMissingAllows($pdo, $managerRoleId, [
             'purchases.view', 'purchases.manage', 'purchases.approve',
             'suppliers.view', 'suppliers.manage',
+            'sales.edit', 'sales.backdate', 'sales.void', 'sales.returns',
+            'inventory.edit', 'inventory.change_sell', 'inventory.change_buy',
+            'inventory.adjust', 'inventory.delete',
+            'reports.export',
         ]);
     }
     if ($pharmacistRoleId) {
         grantMissingAllows($pdo, $pharmacistRoleId, [
             'purchases.view', 'purchases.manage', 'suppliers.view',
+            'inventory.edit', 'inventory.adjust', 'sales.returns',
+        ]);
+    }
+    if ($cashierRoleId) {
+        grantMissingAllows($pdo, $cashierRoleId, [
+            'inventory.view',
         ]);
     }
     if ($staffRoleId) {
         grantMissingAllows($pdo, $staffRoleId, [
             'purchases.view', 'purchases.manage', 'suppliers.view', 'suppliers.manage',
+            'inventory.edit',
         ]);
     }
 }

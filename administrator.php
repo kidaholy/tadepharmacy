@@ -9,13 +9,16 @@ $pdo = getDB();
 $currentUser = currentUser();
 $tab = $_GET['tab'] ?? (can('roles.manage') ? 'roles' : (can('users.manage') ? 'users' : 'categories'));
 if ($tab === 'roles' && !can('roles.manage')) {
-    $tab = can('users.manage') ? 'users' : 'categories';
+    $tab = can('users.manage') ? 'users' : (can('categories.manage') ? 'categories' : 'audit');
 }
 if ($tab === 'users' && !can('users.manage')) {
-    $tab = can('roles.manage') ? 'roles' : 'categories';
+    $tab = can('roles.manage') ? 'roles' : (can('categories.manage') ? 'categories' : 'audit');
 }
 if ($tab === 'categories' && !can('categories.manage')) {
-    $tab = can('roles.manage') ? 'roles' : 'users';
+    $tab = can('roles.manage') ? 'roles' : (can('users.manage') ? 'users' : 'audit');
+}
+if ($tab === 'audit' && !can('roles.manage') && !can('users.manage')) {
+    $tab = can('categories.manage') ? 'categories' : (can('roles.manage') ? 'roles' : 'users');
 }
 $editRoleId = (int) ($_GET['edit_role'] ?? 0);
 $editUserId = (int) ($_GET['edit_user'] ?? 0);
@@ -107,7 +110,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 
     if ($act === 'create_category' && can('categories.manage')) {
-        $name = trim($_POST['name'] ?? '');
+        require_once __DIR__ . '/inventory_lib.php';
+        $name = canonicalizeCategoryName(trim($_POST['name'] ?? ''));
         $description = trim($_POST['description'] ?? '');
         $productType = trim($_POST['product_type'] ?? 'medicine');
         if (!isset(productTypes()[$productType])) {
@@ -300,6 +304,11 @@ renderSidebar();
   <?php if (can('categories.manage')): ?>
   <a href="administrator.php?tab=categories" class="admin-tab<?= $tab === 'categories' ? ' active' : '' ?>">
     <i data-lucide="folder"></i> Categories
+  </a>
+  <?php endif; ?>
+  <?php if (can('roles.manage') || can('users.manage')): ?>
+  <a href="administrator.php?tab=audit" class="admin-tab<?= $tab === 'audit' ? ' active' : '' ?>">
+    <i data-lucide="scroll-text"></i> Audit Trail
   </a>
   <?php endif; ?>
 </div>
@@ -735,6 +744,75 @@ $catPlaceholder = $catPlaceholders[$catType] ?? 'e.g. Category name';
   </div>
 </div>
 <?php endif; ?>
+
+<?php elseif ($tab === 'audit' && (can('roles.manage') || can('users.manage'))): ?>
+<?php
+$auditQ = trim($_GET['aq'] ?? '');
+$auditPage = max(1, (int)($_GET['apage'] ?? 1));
+$auditPer = 50;
+$auditWhere = [];
+$auditParams = [];
+if ($auditQ !== '') {
+    $auditWhere[] = "(a.action LIKE ? OR a.entity_type LIKE ? OR a.details LIKE ? OR u.full_name LIKE ? OR u.username LIKE ?)";
+    $like = '%' . $auditQ . '%';
+    $auditParams = [$like, $like, $like, $like, $like];
+}
+$auditWhereSql = $auditWhere ? ('WHERE ' . implode(' AND ', $auditWhere)) : '';
+$cntStmt = $pdo->prepare("SELECT COUNT(*) FROM audit_log a LEFT JOIN users u ON u.id = a.user_id $auditWhereSql");
+$cntStmt->execute($auditParams);
+$auditTotal = (int)$cntStmt->fetchColumn();
+$auditPages = max(1, (int)ceil($auditTotal / $auditPer));
+if ($auditPage > $auditPages) $auditPage = $auditPages;
+$auditOffset = ($auditPage - 1) * $auditPer;
+$auditStmt = $pdo->prepare("
+    SELECT a.*, u.full_name, u.username
+    FROM audit_log a
+    LEFT JOIN users u ON u.id = a.user_id
+    $auditWhereSql
+    ORDER BY a.created_at DESC, a.id DESC
+    LIMIT $auditPer OFFSET $auditOffset
+");
+$auditStmt->execute($auditParams);
+$auditRows = $auditStmt->fetchAll();
+$auditBase = 'administrator.php?' . http_build_query(array_filter(['tab' => 'audit', 'aq' => $auditQ ?: null]));
+?>
+<div class="card">
+  <div class="card-header">
+    <span class="card-title">Audit Trail (<?= number_format($auditTotal) ?>)</span>
+    <form method="GET" style="display:flex;gap:8px;align-items:center;">
+      <input type="hidden" name="tab" value="audit">
+      <div class="search-bar"><i data-lucide="search"></i><input type="text" name="aq" value="<?= htmlspecialchars($auditQ) ?>" placeholder="Search user, action, details..."></div>
+      <button type="submit" class="btn btn-ghost btn-sm">Search</button>
+    </form>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Date / Time</th>
+          <th>User</th>
+          <th>Action</th>
+          <th>Entity</th>
+          <th>Details</th>
+        </tr>
+      </thead>
+      <tbody>
+      <?php if (!$auditRows): ?>
+        <tr><td colspan="5" style="text-align:center;padding:32px;color:var(--text-300);">No audit entries found</td></tr>
+      <?php else: foreach ($auditRows as $a): ?>
+        <tr>
+          <td style="font-size:12px;white-space:nowrap;"><?= htmlspecialchars(date('M j, Y H:i', strtotime($a['created_at']))) ?></td>
+          <td><?= htmlspecialchars($a['full_name'] ?: ($a['username'] ?: 'System')) ?></td>
+          <td><code style="font-size:12px;"><?= htmlspecialchars($a['action']) ?></code></td>
+          <td style="font-size:12px;"><?= htmlspecialchars($a['entity_type']) ?><?= $a['entity_id'] ? (' #' . (int)$a['entity_id']) : '' ?></td>
+          <td style="font-size:12px;color:var(--text-300);max-width:420px;"><?= htmlspecialchars($a['details'] ?? '') ?></td>
+        </tr>
+      <?php endforeach; endif; ?>
+      </tbody>
+    </table>
+  </div>
+  <?php renderPagination($auditPage, $auditPages, $auditBase); ?>
+</div>
 
 <?php endif; ?>
 

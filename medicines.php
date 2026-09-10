@@ -79,17 +79,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
         if (!$name) { $error = 'Product name is required.'; }
         else {
-            if ($id) {
-                $pdo->prepare("UPDATE medicines SET name=?,generic_name=?,strength=?,dosage_form=?,category_id=?,unit=?,description=?,reorder_level=?,product_type=? WHERE id=?")
-                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder,$productType,$id]);
+            // Prevent duplicate products (same name + unit + type, case-insensitive).
+            $dup = $pdo->prepare("
+                SELECT id FROM medicines
+                WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))
+                  AND LOWER(TRIM(COALESCE(unit,''))) = LOWER(TRIM(?))
+                  AND COALESCE(product_type,'medicine') = ?
+                  AND id != ?
+                LIMIT 1
+            ");
+            $dup->execute([$name, $unit, $productType, $id]);
+            if ($dup->fetch()) {
+                $error = 'A product with this name and unit already exists. Open the existing product instead of creating a duplicate.';
+            } elseif ($id) {
+                $pdo->prepare("UPDATE medicines SET name=?,generic_name=?,strength=?,dosage_form=?,category_id=?,unit=?,description=?,reorder_level=?,product_type=?,brand_name=COALESCE(NULLIF(TRIM(brand_name),''), ?) WHERE id=?")
+                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder,$productType,$name,$id]);
                 flashSet('success', 'Product updated successfully.');
+                header('Location: medicines.php?type=' . urlencode($productType));
+                exit;
             } else {
-                $pdo->prepare("INSERT INTO medicines (name,generic_name,strength,dosage_form,category_id,unit,description,reorder_level,product_type) VALUES (?,?,?,?,?,?,?,?,?)")
-                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder,$productType]);
+                $pdo->prepare("INSERT INTO medicines (name,generic_name,strength,dosage_form,category_id,unit,description,reorder_level,product_type,brand_name) VALUES (?,?,?,?,?,?,?,?,?,?)")
+                    ->execute([$name,$generic,$strength,$dosage_form,$category_id,$unit,$description,$reorder,$productType,$name]);
                 flashSet('success', 'Product added successfully.');
+                header('Location: medicines.php?type=' . urlencode($productType));
+                exit;
             }
-            header('Location: medicines.php?type=' . urlencode($productType));
-            exit;
         }
     }
 

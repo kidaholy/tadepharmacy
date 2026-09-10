@@ -313,6 +313,8 @@ function initDB(PDO $pdo): void {
     initPermissionsSchema($pdo);
     initPurchaseModuleSchema($pdo);
     enableBatchDelete($pdo);
+    require_once __DIR__ . '/inventory_lib.php';
+    initInventorySchema($pdo);
 }
 
 /**

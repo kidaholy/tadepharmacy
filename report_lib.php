@@ -23,8 +23,13 @@ function reportPaymentMethods(): array {
     ]);
 }
 
-/** Business-local calendar date for UTC-stored timestamps (Africa/Addis_Ababa = UTC+3). */
+/** Business-local calendar date for UTC-stored timestamps (Africa/Addis_Ababa = UTC+3).
+ * Prefers sale_at (actual transaction time) so backdated sales land on the correct report day.
+ */
 function reportLocalDateExpr(string $alias = 's', string $col = 'created_at'): string {
+    if ($col === 'created_at') {
+        return "date(COALESCE($alias.sale_at, $alias.created_at), '+3 hours')";
+    }
     return "date($alias.$col, '+3 hours')";
 }
 
@@ -147,7 +152,7 @@ function reportApplyTypeCategory(array $filters, string $medAlias, array &$where
 
 function reportBuildSalesContext(array $filters, string $saleAlias = 's'): array {
     $joins  = ["LEFT JOIN customers cust ON cust.id = $saleAlias.customer_id"];
-    $where  = [];
+    $where  = ["COALESCE($saleAlias.status, 'active') != 'voided'"];
     $params = [];
 
     if ($filters['customer']) {

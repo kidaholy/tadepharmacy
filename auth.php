@@ -55,11 +55,13 @@ function pagePermissionMap(): array {
         'purchase_invoice'  => 'purchases.view',
         'suppliers'         => ['suppliers.view', 'purchases.view'],
         'inventory'     => 'inventory.view',
+        'bin_card'      => 'inventory.view',
+        'stock_history' => 'inventory.view',
         'reports'       => 'reports.view',
         'investment'    => 'reports.view',
         'settings'      => 'settings.view',
         'landing_cms'   => 'landing.edit',
-        'administrator' => ['users.manage', 'roles.manage'],
+        'administrator' => ['users.manage', 'roles.manage', 'categories.manage'],
     ];
 }
 
