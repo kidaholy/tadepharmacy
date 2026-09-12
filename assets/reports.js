@@ -228,6 +228,54 @@ function switchSalesTrend(view, btn) {
   btn.classList.add('btn-primary');
 }
 
+function initProfitTrendChart() {
+  const el = document.getElementById('chartProfitTrend');
+  if (!el || typeof Chart === 'undefined') return;
+  const labels = JSON.parse(el.dataset.dailyLabels || '[]');
+  const mk = (key, label, color) => ({
+    label,
+    data: JSON.parse(el.dataset['daily' + key] || '[]'),
+    borderColor: color,
+    backgroundColor: color + '22',
+    fill: false,
+    tension: 0.3,
+    pointRadius: 2,
+  });
+  const chart = new Chart(el, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [
+        mk('Revenue', 'Revenue', '#2563eb'),
+        mk('Cogs', 'COGS', '#d97706'),
+        mk('Gross', 'Gross Profit', '#0284c7'),
+        mk('Expenses', 'Operating Expenses', '#dc2626'),
+        mk('Net', 'Net Profit', '#059669'),
+      ]
+    },
+    options: chartDefaults()
+  });
+  el._chart = chart;
+}
+
+function switchProfitTrend(view, btn) {
+  const el = document.getElementById('chartProfitTrend');
+  if (!el || !el._chart) return;
+  const chart = el._chart;
+  chart.data.labels = JSON.parse(el.dataset[view + 'Labels'] || '[]');
+  const keys = ['Revenue', 'Cogs', 'Gross', 'Expenses', 'Net'];
+  keys.forEach((k, i) => {
+    chart.data.datasets[i].data = JSON.parse(el.dataset[view + k] || '[]');
+  });
+  chart.update();
+  document.querySelectorAll('[data-profit-trend-view]').forEach(b => {
+    b.classList.remove('btn-primary');
+    b.classList.add('btn-ghost');
+  });
+  btn.classList.remove('btn-ghost');
+  btn.classList.add('btn-primary');
+}
+
 window.addEventListener('load', () => {
   toggleCustomDates();
   initReportTypeCategoryFilter();
@@ -235,6 +283,7 @@ window.addEventListener('load', () => {
   initReportCharts();
   initProductTrendChart();
   initSalesTrendChart();
+  initProfitTrendChart();
   if (typeof refreshIcons === 'function') refreshIcons();
 });
 

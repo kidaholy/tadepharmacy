@@ -2289,3 +2289,12 @@ code {
   .btn { display: none !important; }
   .modal-overlay { display: none !important; }
 }
+
+/* Profit & Loss page */
+.profit-more-filters summary::-webkit-details-marker { display: none; }
+.profit-more-filters summary { gap: 6px; align-items: center; }
+.profit-more-filters[open] summary { margin-bottom: 4px; }
+@media (max-width: 768px) {
+  .report-page .grid-2 { grid-template-columns: 1fr !important; }
+  .report-page .stats-grid.kpi-grid { grid-template-columns: 1fr 1fr !important; }
+}

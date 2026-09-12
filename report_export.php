@@ -263,6 +263,224 @@ switch ($report) {
         }
         $filename = 'investment-growth-' . $dates['from'] . '-' . $dates['to'];
         break;
+
+    case 'profit':
+        require_once __DIR__ . '/profit_lib.php';
+        profitEnsureOverdueStatuses($pdo);
+        $bundle = profitExportBundle($pdo, $dates, $filters, [
+            'cat_sort' => $_GET['cat_sort'] ?? 'revenue',
+            'prod_sort' => $_GET['prod_sort'] ?? 'profit',
+            'prod_limit' => (int)($_GET['prod_limit'] ?? 50),
+            'margin_threshold' => (float)($_GET['margin_threshold'] ?? 25),
+            'exp_filters' => profitParseExpenseFilters($_GET),
+        ]);
+        $core = $bundle['core'];
+        $pharmacy = getSetting('pharmacy_name', 'TADE PHARMACY');
+        $chips = reportActiveFilterChips($dates, $filters, reportFilterOptions($pdo));
+
+        if ($format === 'pdf' || $format === 'print') {
+            $sections = [
+                'Summary' => [
+                    ['headers' => ['Metric', 'Value'], 'rows' => [
+                        ['Report Period', $dates['label']],
+                        ['Filters', implode(' · ', $chips)],
+                        ['Revenue', number_format($core['revenue'], 2)],
+                        ['COGS', number_format($core['cogs'], 2)],
+                        ['Gross Profit', number_format($core['gross_profit'], 2)],
+                        ['Operating Expenses', number_format($core['expenses_full'], 2)],
+                        ['Net Profit', number_format($core['net_profit'], 2)],
+                        ['Gross Margin %', number_format($core['gross_margin'], 1) . '%'],
+                        ['Net Margin %', number_format($core['net_margin'], 1) . '%'],
+                        ['Profit per ETB 1,000', number_format($core['profit_per_1000'], 2)],
+                    ]],
+                ],
+                'Category Profitability' => [
+                    ['headers' => ['Category', 'Units', 'Revenue', 'COGS', 'Gross Profit', 'Margin %'], 'rows' => array_map(fn($c) => [
+                        $c['category'], $c['units'], round($c['revenue'], 2), round($c['cogs'], 2),
+                        round($c['gross_profit'], 2), number_format($c['gross_margin'], 1) . '%',
+                    ], $bundle['categories'])],
+                ],
+                'Most Profitable Products' => [
+                    ['headers' => ['Product', 'Units', 'Revenue', 'COGS', 'Gross Profit', 'Margin %', 'Profit/Unit', 'Txns'], 'rows' => array_map(fn($p) => [
+                        $p['name'], $p['units'], round($p['revenue'], 2), round($p['cogs'], 2),
+                        round($p['gross_profit'], 2), number_format((float)$p['margin_pct'], 1) . '%',
+                        round((float)$p['profit_per_unit'], 2), $p['transactions'],
+                    ], $bundle['products'])],
+                ],
+                'Low-Margin Products' => [
+                    ['headers' => ['Product', 'Revenue', 'Gross Profit', 'Margin %'], 'rows' => array_map(fn($p) => [
+                        $p['name'], round($p['revenue'], 2), round($p['gross_profit'], 2),
+                        number_format((float)$p['margin_pct'], 1) . '%',
+                    ], $bundle['low'])],
+                ],
+                'Expense Breakdown' => [
+                    ['headers' => ['Category', 'Amount', '% of OpEx'], 'rows' => array_map(fn($e) => [
+                        $e['category'], round((float)$e['total'], 2), number_format((float)$e['pct'], 1) . '%',
+                    ], $bundle['expenses']['breakdown'])],
+                ],
+                'Profit by Payment Method' => [
+                    ['headers' => ['Method', 'Txns', 'Revenue', 'COGS', 'Gross Profit'], 'rows' => array_map(fn($p) => [
+                        $p['label'], $p['transactions'], round($p['revenue'], 2), round($p['cogs'], 2), round($p['gross_profit'], 2),
+                    ], array_filter($bundle['payments'], fn($p) => $p['transactions'] > 0 || $p['revenue'] > 0))],
+                ],
+                'Profit by Cashier' => [
+                    ['headers' => ['Cashier', 'Txns', 'Revenue', 'Gross Profit', 'Margin %'], 'rows' => array_map(fn($c) => [
+                        $c['cashier'], $c['transactions'], round($c['revenue'], 2), round($c['gross_profit'], 2),
+                        number_format($c['margin_pct'], 1) . '%',
+                    ], $bundle['cashiers'])],
+                ],
+                'Profit by Sales Type' => [
+                    ['headers' => ['Type', 'Txns', 'Revenue', 'COGS', 'Gross Profit', 'Margin %'], 'rows' => array_map(fn($s) => [
+                        $s['label'], $s['transactions'], round($s['revenue'], 2), round($s['cogs'], 2),
+                        round($s['gross_profit'], 2), number_format($s['margin_pct'], 1) . '%',
+                    ], $bundle['salesTypes'])],
+                ],
+                'Profit by Customer' => [
+                    ['headers' => ['Customer', 'Txns', 'Revenue', 'Gross Profit', 'Margin %'], 'rows' => array_map(fn($c) => [
+                        $c['customer'], $c['transactions'], round($c['revenue'], 2), round($c['gross_profit'], 2),
+                        number_format($c['margin_pct'], 1) . '%',
+                    ], $bundle['customers'])],
+                ],
+                'Profit Comparison' => [
+                    ['headers' => ['Metric', 'Current', 'Previous', 'Delta'], 'rows' => [
+                        ['Revenue', round($core['revenue'], 2), round($bundle['kpis']['prev_core']['revenue'], 2), round($core['revenue'] - $bundle['kpis']['prev_core']['revenue'], 2)],
+                        ['COGS', round($core['cogs'], 2), round($bundle['kpis']['prev_core']['cogs'], 2), round($core['cogs'] - $bundle['kpis']['prev_core']['cogs'], 2)],
+                        ['Gross Profit', round($core['gross_profit'], 2), round($bundle['kpis']['prev_core']['gross_profit'], 2), round($core['gross_profit'] - $bundle['kpis']['prev_core']['gross_profit'], 2)],
+                        ['Operating Expenses', round($core['expenses_full'], 2), round($bundle['kpis']['prev_core']['expenses_full'], 2), round($core['expenses_full'] - $bundle['kpis']['prev_core']['expenses_full'], 2)],
+                        ['Net Profit', round($core['net_profit'], 2), round($bundle['kpis']['prev_core']['net_profit'], 2), round($core['net_profit'] - $bundle['kpis']['prev_core']['net_profit'], 2)],
+                    ]],
+                ],
+            ];
+            ?>
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title><?= htmlspecialchars($pharmacy) ?> — Profit &amp; Loss</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, Helvetica, sans-serif; font-size: 12px; color: #111; padding: 24px; }
+  h1 { font-size: 18px; margin-bottom: 4px; text-transform: uppercase; }
+  h2 { font-size: 14px; margin: 18px 0 6px; border-bottom: 1px solid #333; padding-bottom: 4px; }
+  .meta { color: #444; margin-bottom: 12px; line-height: 1.5; }
+  table { width: 100%; border-collapse: collapse; margin-top: 6px; margin-bottom: 10px; }
+  th, td { border: 1px solid #333; padding: 5px 7px; text-align: left; font-size: 11px; }
+  th { background: #eee; text-transform: uppercase; font-size: 10px; }
+  .note { margin-top: 16px; font-size: 11px; color: #555; }
+  @media print { body { padding: 10px; } .no-print { display: none; } }
+</style>
+</head>
+<body>
+  <h1>Profit &amp; Loss Report</h1>
+  <div class="meta">
+    <div><strong><?= htmlspecialchars($pharmacy) ?></strong></div>
+    <div>Period: <?= htmlspecialchars($dates['label']) ?></div>
+    <div>Generated: <?= date('Y-m-d H:i') ?></div>
+    <div>Filters: <?= htmlspecialchars(implode(' · ', $chips)) ?></div>
+  </div>
+  <?php if ($format === 'pdf'): ?>
+  <p class="no-print note">Use your browser’s <strong>Print → Save as PDF</strong> to download this report.</p>
+  <?php endif; ?>
+  <?php foreach ($sections as $title => $blocks): ?>
+    <h2><?= htmlspecialchars($title) ?></h2>
+    <?php foreach ($blocks as $block): ?>
+      <table>
+        <thead><tr><?php foreach ($block['headers'] as $h): ?><th><?= htmlspecialchars($h) ?></th><?php endforeach; ?></tr></thead>
+        <tbody>
+        <?php if (empty($block['rows'])): ?>
+          <tr><td colspan="<?= count($block['headers']) ?>" style="text-align:center;">No data</td></tr>
+        <?php else: foreach ($block['rows'] as $row): ?>
+          <tr><?php foreach ($row as $cell): ?><td><?= htmlspecialchars((string)$cell) ?></td><?php endforeach; ?></tr>
+        <?php endforeach; endif; ?>
+        </tbody>
+      </table>
+    <?php endforeach; ?>
+  <?php endforeach; ?>
+  <script>window.onload = function () { window.print(); };</script>
+</body>
+</html>
+            <?php
+            exit;
+        }
+
+        // Excel: multi-section HTML workbook-style table
+        $headers = ['Section', 'Col1', 'Col2', 'Col3', 'Col4', 'Col5', 'Col6', 'Col7', 'Col8'];
+        $rows = [];
+        $rows[] = ['PROFIT & LOSS SUMMARY', $pharmacy, $dates['label'], '', '', '', '', '', ''];
+        $rows[] = ['Filters', implode(' | ', $chips), '', '', '', '', '', '', ''];
+        $rows[] = ['Metric', 'Value', '', '', '', '', '', '', ''];
+        foreach ([
+            ['Revenue', $core['revenue']],
+            ['COGS', $core['cogs']],
+            ['Gross Profit', $core['gross_profit']],
+            ['Operating Expenses', $core['expenses_full']],
+            ['Net Profit', $core['net_profit']],
+            ['Gross Margin %', round($core['gross_margin'], 1)],
+            ['Net Margin %', round($core['net_margin'], 1)],
+            ['Profit per ETB 1,000', round($core['profit_per_1000'], 2)],
+        ] as $r) $rows[] = [$r[0], $r[1], '', '', '', '', '', '', ''];
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $rows[] = ['CATEGORY PROFITABILITY', 'Units', 'Revenue', 'COGS', 'Gross Profit', 'Margin %', '', '', ''];
+        foreach ($bundle['categories'] as $c) {
+            $rows[] = [$c['category'], $c['units'], round($c['revenue'], 2), round($c['cogs'], 2), round($c['gross_profit'], 2), round($c['gross_margin'], 1), '', '', ''];
+        }
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $rows[] = ['MOST PROFITABLE PRODUCTS', 'Units', 'Revenue', 'COGS', 'Gross Profit', 'Margin %', 'Avg Sell', 'Profit/Unit', 'Txns'];
+        foreach ($bundle['products'] as $p) {
+            $rows[] = [$p['name'], $p['units'], round($p['revenue'], 2), round($p['cogs'], 2), round($p['gross_profit'], 2), round((float)$p['margin_pct'], 1), round((float)$p['avg_sell'], 2), round((float)$p['profit_per_unit'], 2), $p['transactions']];
+        }
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $rows[] = ['LOW-MARGIN PRODUCTS', 'Revenue', 'Gross Profit', 'Margin %', '', '', '', '', ''];
+        foreach ($bundle['low'] as $p) {
+            $rows[] = [$p['name'], round($p['revenue'], 2), round($p['gross_profit'], 2), round((float)$p['margin_pct'], 1), '', '', '', '', ''];
+        }
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $rows[] = ['EXPENSE BREAKDOWN', 'Amount', '% of OpEx', 'Paid', 'Pending', 'Overdue', '', '', ''];
+        $rows[] = ['TOTAL', round($bundle['expenses']['total'], 2), '100', round($bundle['expenses']['paid'], 2), round($bundle['expenses']['pending'], 2), round($bundle['expenses']['overdue'], 2), '', '', ''];
+        foreach ($bundle['expenses']['breakdown'] as $e) {
+            $rows[] = [$e['category'], round((float)$e['total'], 2), round((float)$e['pct'], 1), '', '', '', '', '', ''];
+        }
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $rows[] = ['PAYMENT METHOD', 'Txns', 'Revenue', 'COGS', 'Gross Profit', '', '', '', ''];
+        foreach ($bundle['payments'] as $p) {
+            if ($p['transactions'] <= 0 && $p['revenue'] <= 0) continue;
+            $rows[] = [$p['label'], $p['transactions'], round($p['revenue'], 2), round($p['cogs'], 2), round($p['gross_profit'], 2), '', '', '', ''];
+        }
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $rows[] = ['CASHIER', 'Txns', 'Revenue', 'Gross Profit', 'Margin %', '', '', '', ''];
+        foreach ($bundle['cashiers'] as $c) {
+            $rows[] = [$c['cashier'], $c['transactions'], round($c['revenue'], 2), round($c['gross_profit'], 2), round($c['margin_pct'], 1), '', '', '', ''];
+        }
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $rows[] = ['SALES TYPE', 'Txns', 'Revenue', 'COGS', 'Gross Profit', 'Margin %', '', '', ''];
+        foreach ($bundle['salesTypes'] as $s) {
+            $rows[] = [$s['label'], $s['transactions'], round($s['revenue'], 2), round($s['cogs'], 2), round($s['gross_profit'], 2), round($s['margin_pct'], 1), '', '', ''];
+        }
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $rows[] = ['CUSTOMER', 'Txns', 'Revenue', 'Gross Profit', 'Margin %', '', '', '', ''];
+        foreach ($bundle['customers'] as $c) {
+            $rows[] = [$c['customer'], $c['transactions'], round($c['revenue'], 2), round($c['gross_profit'], 2), round($c['margin_pct'], 1), '', '', '', ''];
+        }
+
+        $rows[] = ['', '', '', '', '', '', '', '', ''];
+        $v = $bundle['variance'];
+        $rows[] = ['PROFIT COMPARISON', 'Delta', '', '', '', '', '', '', ''];
+        $rows[] = ['Net Profit change', round($v['net_delta'], 2), '', '', '', '', '', '', ''];
+        $rows[] = ['Revenue delta', round($v['revenue_delta'], 2), '', '', '', '', '', '', ''];
+        $rows[] = ['COGS delta', round($v['cogs_delta'], 2), '', '', '', '', '', '', ''];
+        $rows[] = ['OpEx delta', round($v['expenses_delta'], 2), '', '', '', '', '', '', ''];
+
+        $filename = 'profit-loss-' . $dates['from'] . '-' . $dates['to'];
+        break;
+
     default:
         $kpis = reportOverviewKpis($pdo, $dates, $filters);
         $headers = ['Metric', 'Value'];

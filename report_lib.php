@@ -4,15 +4,17 @@ require_once __DIR__ . '/sales_lib.php';
 
 function reportDatePresets(): array {
     return [
-        'today'      => 'Today',
-        'yesterday'  => 'Yesterday',
-        'last7'      => 'Last 7 Days',
-        'last30'     => 'Last 30 Days',
-        'last90'     => 'Last 90 Days',
-        'this_month' => 'This Month',
-        'last_month' => 'Last Month',
-        'this_year'  => 'This Year',
-        'custom'     => 'Custom Range',
+        'today'         => 'Today',
+        'yesterday'     => 'Yesterday',
+        'last7'         => 'Last 7 Days',
+        'last30'        => 'Last 30 Days',
+        'last90'        => 'Last 90 Days',
+        'this_week'     => 'This Week',
+        'this_month'    => 'This Month',
+        'last_month'    => 'Previous Month',
+        'this_year'     => 'This Year',
+        'previous_year' => 'Previous Year',
+        'custom'        => 'Custom Date Range',
     ];
 }
 
@@ -92,6 +94,11 @@ function reportParseDateRange(array $input): array {
         case 'this_year':
             $from = date('Y-01-01');
             $to   = $today;
+            break;
+        case 'previous_year':
+            $y = (int)date('Y') - 1;
+            $from = sprintf('%04d-01-01', $y);
+            $to   = sprintf('%04d-12-31', $y);
             break;
         case 'custom':
         default:
@@ -212,7 +219,10 @@ function reportBuildSalesContext(array $filters, string $saleAlias = 's'): array
 /** Shared WHERE/JOIN pieces for sale_items-based reports (products, category, COGS). */
 function reportItemFilterContext(array $filters, string $from, string $to): array {
     $day = reportLocalDateExpr('s');
-    $where = ["$day BETWEEN ? AND ?"];
+    $where = [
+        "$day BETWEEN ? AND ?",
+        "COALESCE(s.status, 'active') != 'voided'",
+    ];
     $params = [$from, $to];
     $joins = [
         'JOIN sales s ON s.id = si.sale_id',
@@ -272,23 +282,26 @@ function reportDateClause(string $from, string $to, string $col = 'created_at', 
 }
 
 function reportPctChange(float $current, float $previous): ?float {
-    if ($previous == 0) {
-        return $current > 0 ? 100.0 : ($current < 0 ? -100.0 : 0.0);
+    // No valid baseline → caller should show "No previous-period data" (never fake +100%).
+    if (abs($previous) < 0.0000001) {
+        return null;
     }
     return (($current - $previous) / abs($previous)) * 100;
 }
 
 function reportTrendMeta(float $current, float $previous, bool $higherIsGood = true): array {
+    $hasPrevious = abs($previous) >= 0.0000001;
     $change = reportPctChange($current, $previous);
     $up     = $current >= $previous;
     $good   = $higherIsGood ? $up : !$up;
     return [
-        'current'  => $current,
-        'previous' => $previous,
-        'change'   => $change,
-        'up'       => $up,
-        'good'     => $good,
-        'dir'      => $up ? 'up' : 'down',
+        'current'      => $current,
+        'previous'     => $previous,
+        'change'       => $change,
+        'has_previous' => $hasPrevious,
+        'up'           => $up,
+        'good'         => $good,
+        'dir'          => $up ? 'up' : 'down',
     ];
 }
 

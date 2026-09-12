@@ -222,9 +222,46 @@ function initDB(PDO $pdo): void {
         'ALTER TABLE sale_items ADD COLUMN discount REAL DEFAULT 0',
         'ALTER TABLE sale_items ADD COLUMN tax REAL DEFAULT 0',
         'ALTER TABLE medicines ADD COLUMN product_type TEXT DEFAULT \'medicine\'',
+        // Profit page — operating expense fields (safe if already present)
+        'ALTER TABLE operating_expenses ADD COLUMN expense_name TEXT',
+        'ALTER TABLE operating_expenses ADD COLUMN frequency TEXT DEFAULT \'one_time\'',
+        'ALTER TABLE operating_expenses ADD COLUMN due_date DATE',
+        'ALTER TABLE operating_expenses ADD COLUMN payment_date DATE',
+        'ALTER TABLE operating_expenses ADD COLUMN payment_method TEXT',
+        'ALTER TABLE operating_expenses ADD COLUMN status TEXT DEFAULT \'paid\'',
+        'ALTER TABLE operating_expenses ADD COLUMN notes TEXT',
+        'ALTER TABLE operating_expenses ADD COLUMN series_id TEXT',
     ] as $migration) {
         try { $pdo->exec($migration); } catch (PDOException $e) { /* already applied */ }
     }
+
+    // Expandable expense categories used by Profit & Loss OpEx management.
+    $pdo->exec("
+        CREATE TABLE IF NOT EXISTS expense_categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL UNIQUE,
+            sort_order INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ");
+    $defaultExpenseCats = [
+        'Rent', 'Salary/Wages', 'Electricity', 'Water', 'Internet', 'Transportation',
+        'Delivery', 'Bank Fees', 'Cleaning', 'Maintenance', 'Tax/License', 'Administration', 'Other',
+    ];
+    $expCatIns = $pdo->prepare("INSERT OR IGNORE INTO expense_categories (name, sort_order) VALUES (?, ?)");
+    foreach ($defaultExpenseCats as $i => $name) {
+        $expCatIns->execute([$name, $i + 1]);
+    }
+    // Backfill display name for legacy expense rows.
+    try {
+        $pdo->exec("UPDATE operating_expenses
+            SET expense_name = COALESCE(NULLIF(TRIM(expense_name), ''), NULLIF(TRIM(description), ''), category)
+            WHERE expense_name IS NULL OR TRIM(expense_name) = ''");
+        $pdo->exec("UPDATE operating_expenses SET frequency = 'one_time' WHERE frequency IS NULL OR TRIM(frequency) = ''");
+        $pdo->exec("UPDATE operating_expenses SET status = 'paid' WHERE status IS NULL OR TRIM(status) = ''");
+        $pdo->exec("UPDATE operating_expenses SET due_date = expense_date WHERE due_date IS NULL");
+        $pdo->exec("UPDATE operating_expenses SET payment_date = expense_date WHERE payment_date IS NULL AND status = 'paid'");
+    } catch (PDOException $e) { /* ignore */ }
 
     $pdo->exec("
         CREATE TABLE IF NOT EXISTS sale_returns (

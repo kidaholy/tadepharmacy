@@ -165,7 +165,7 @@ function renderReportTypeCategoryFields(array $filters, array $options): void {
     }
 }
 
-function renderReportFilters(array $dates, array $filters, array $options, string $formAction = '', ?array $presets = null, bool $showProduct = true, bool $showSupplier = true, string $exportReport = 'overview'): void {
+function renderReportFilters(array $dates, array $filters, array $options, string $formAction = '', ?array $presets = null, bool $showProduct = true, bool $showSupplier = true, string $exportReport = 'overview', array $exportFormats = ['csv', 'excel', 'print'], bool $moreFilters = false, array $exportExtra = []): void {
     $presets = $presets ?? reportDatePresets();
     $payments = reportPaymentMethods();
     $isCustom = $dates['preset'] === 'custom';
@@ -173,6 +173,8 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
     $hasExtra = ($filters['type'] ?? '') !== '' || $filters['product'] || $filters['category'] || $filters['supplier']
         || $filters['customer'] !== '' || $filters['cashier'] || $filters['payment_method'] !== ''
         || $filters['sales_type'] !== '';
+    $moreOpen = $moreFilters && ($filters['supplier'] || $filters['customer'] !== '' || $filters['cashier']
+        || $filters['payment_method'] !== '' || $filters['sales_type'] !== '' || $filters['branch']);
     $productNameForInput = '';
     if (!empty($filters['product'])) {
         foreach ($options['products'] as $p) {
@@ -212,6 +214,7 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
       </div>
       <?php endif; ?>
       <?php renderReportTypeCategoryFields($filters, $options); ?>
+      <?php if (!$moreFilters): ?>
       <?php if ($showSupplier): ?>
       <div class="form-group">
         <label>Supplier</label>
@@ -264,11 +267,73 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
           <option value="">All Branches</option>
         </select>
       </div>
+      <?php endif; ?>
     </div>
+    <?php if ($moreFilters): ?>
+    <details class="profit-more-filters" <?= $moreOpen ? 'open' : '' ?>>
+      <summary class="btn btn-ghost btn-sm" style="display:inline-flex;margin:12px 0 8px;cursor:pointer;list-style:none;">
+        <i data-lucide="sliders-horizontal"></i> More Filters
+      </summary>
+      <div class="report-filters-grid" style="margin-top:8px;">
+        <?php if ($showSupplier): ?>
+        <div class="form-group">
+          <label>Supplier</label>
+          <select name="supplier">
+            <option value="">All Suppliers</option>
+            <?php foreach ($options['suppliers'] as $s): ?>
+            <option value="<?= $s['id'] ?>" <?= $filters['supplier'] == $s['id'] ? 'selected' : '' ?>><?= htmlspecialchars($s['name']) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <?php endif; ?>
+        <div class="form-group">
+          <label>Customer</label>
+          <input type="text" name="customer" value="<?= htmlspecialchars($filters['customer']) ?>" placeholder="Customer name..." list="customerList">
+          <datalist id="customerList">
+            <?php foreach ($options['customers'] as $c): ?>
+            <option value="<?= htmlspecialchars($c['name']) ?>">
+            <?php endforeach; ?>
+          </datalist>
+        </div>
+        <div class="form-group">
+          <label>Cashier</label>
+          <select name="cashier">
+            <option value="">All Cashiers</option>
+            <?php foreach ($options['cashiers'] as $u): ?>
+            <option value="<?= $u['id'] ?>" <?= $filters['cashier'] == $u['id'] ? 'selected' : '' ?>><?= htmlspecialchars($u['full_name']) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Payment Method</label>
+          <select name="payment_method">
+            <option value="">All Methods</option>
+            <?php foreach ($payments as $key => $label): ?>
+            <option value="<?= $key ?>" <?= $filters['payment_method'] === $key ? 'selected' : '' ?>><?= htmlspecialchars($label) ?></option>
+            <?php endforeach; ?>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Sales Type</label>
+          <select name="sales_type">
+            <option value="">All Types</option>
+            <option value="cash" <?= $filters['sales_type'] === 'cash' ? 'selected' : '' ?>>Cash</option>
+            <option value="credit" <?= $filters['sales_type'] === 'credit' ? 'selected' : '' ?>>Credit</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label>Branch</label>
+          <select name="branch" disabled title="Future ready">
+            <option value="">All Branches</option>
+          </select>
+        </div>
+      </div>
+    </details>
+    <?php endif; ?>
     <div class="report-filter-actions">
       <button type="submit" class="btn btn-primary"><i data-lucide="filter"></i> Apply Filter</button>
       <a href="<?= htmlspecialchars(basename($_SERVER['PHP_SELF'])) ?>" class="btn btn-ghost">Clear</a>
-      <?php renderReportExportButtons($dates, $filters, $exportReport); ?>
+      <?php renderReportExportButtons($dates, $filters, $exportReport, $exportFormats, $exportExtra); ?>
     </div>
   </form>
   <div class="report-active-filters" style="display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;padding-top:12px;border-top:1px solid var(--border);">
@@ -283,12 +348,25 @@ function renderReportFilters(array $dates, array $filters, array $options, strin
     <?php
 }
 
-function renderReportExportButtons(array $dates, array $filters, string $report = 'overview'): void {
-    $base = reportQueryString($dates, $filters, ['report' => $report]);
+function renderReportExportButtons(array $dates, array $filters, string $report = 'overview', array $formats = ['csv', 'excel', 'print'], array $extra = []): void {
+    $base = reportQueryString($dates, $filters, array_merge(['report' => $report], $extra));
     echo '<div class="report-export-btns">';
-    echo '<a href="report_export.php?format=csv&' . htmlspecialchars($base) . '" class="btn btn-ghost btn-sm"><i data-lucide="file-spreadsheet"></i> CSV</a>';
-    echo '<a href="report_export.php?format=excel&' . htmlspecialchars($base) . '" class="btn btn-ghost btn-sm"><i data-lucide="file-spreadsheet"></i> Excel</a>';
-    echo '<button type="button" class="btn btn-ghost btn-sm" onclick="window.print()"><i data-lucide="printer"></i> Print</button>';
+    if (in_array('excel', $formats, true)) {
+        echo '<a href="report_export.php?format=excel&' . htmlspecialchars($base) . '" class="btn btn-ghost btn-sm"><i data-lucide="file-spreadsheet"></i> Excel</a>';
+    }
+    if (in_array('pdf', $formats, true)) {
+        echo '<a href="report_export.php?format=pdf&' . htmlspecialchars($base) . '" class="btn btn-ghost btn-sm" target="_blank"><i data-lucide="file-text"></i> PDF</a>';
+    }
+    if (in_array('csv', $formats, true)) {
+        echo '<a href="report_export.php?format=csv&' . htmlspecialchars($base) . '" class="btn btn-ghost btn-sm"><i data-lucide="file-spreadsheet"></i> CSV</a>';
+    }
+    if (in_array('print', $formats, true)) {
+        if ($report === 'profit') {
+            echo '<a href="report_export.php?format=print&' . htmlspecialchars($base) . '" class="btn btn-ghost btn-sm" target="_blank"><i data-lucide="printer"></i> Print</a>';
+        } else {
+            echo '<button type="button" class="btn btn-ghost btn-sm" onclick="window.print()"><i data-lucide="printer"></i> Print</button>';
+        }
+    }
     echo '</div>';
 }
 
@@ -297,7 +375,10 @@ function renderKpiCard(string $label, array $meta, string $color = 'blue', strin
     $change = $meta['change'] ?? null;
     $good = $meta['good'] ?? true;
     $dir = $meta['dir'] ?? 'up';
-    $display = $isPct ? number_format($val, 1) . '%' : number_format($val, 0) . $suffix;
+    $hasPrevious = array_key_exists('has_previous', $meta)
+        ? (bool)$meta['has_previous']
+        : (abs((float)($meta['previous'] ?? 0)) >= 0.0000001);
+    $display = $isPct ? number_format((float)$val, 1) . '%' : number_format((float)$val, 0) . $suffix;
     $trendClass = $good ? 'trend-good' : 'trend-bad';
     $icon = $dir === 'up' ? 'arrow-up-right' : 'arrow-down-right';
     ?>
@@ -306,11 +387,13 @@ function renderKpiCard(string $label, array $meta, string $color = 'blue', strin
   <div class="kpi-body">
     <div class="stat-label"><?= htmlspecialchars($label) ?></div>
     <div class="stat-value"><?= $display ?></div>
-    <?php if ($change !== null && ($meta['previous'] ?? 0) != 0 || abs($change) > 0.01): ?>
+    <?php if ($change !== null && $hasPrevious): ?>
     <div class="kpi-trend <?= $trendClass ?>">
       <i data-lucide="<?= $icon ?>"></i>
       <?= ($change >= 0 ? '+' : '') . number_format($change, 1) ?>% vs prev period
     </div>
+    <?php elseif (array_key_exists('has_previous', $meta) && !$hasPrevious): ?>
+    <div class="stat-sub">No previous-period data</div>
     <?php else: ?>
     <div class="stat-sub">Current period</div>
     <?php endif; ?>
