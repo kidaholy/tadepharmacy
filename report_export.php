@@ -235,31 +235,35 @@ switch ($report) {
         require_once __DIR__ . '/investment_lib.php';
         $cfg = invConfig($_GET);
         $inv = invAnalyze($pdo, $dates, $filters, $cfg);
-        $headers = ['Product', 'Category', 'Units Sold', 'Sales Revenue', 'Gross Profit', 'Margin %', 'Current Stock', 'Avg Daily Sales', 'Days of Stock', 'Sales Growth %', 'Investment Score', 'Recommendation', 'Recommended Qty', 'Est. Investment', 'Est. Revenue', 'Est. Profit', 'Est. ROI %'];
+        $headers = ['Product', 'Category', 'Recommendation', 'Investment Score', 'Data Confidence', 'Units Sold', 'Sales Revenue', 'Gross Profit', 'Margin %', 'Current Stock', 'Usable Stock', 'Calendar Avg Units/Day', 'Forecast Velocity/Day', 'Days of Stock', 'Sales Growth', 'Recommended Qty', 'Unit Cost', 'Required Investment', 'Expected Units (EST.)', 'Expected Revenue (EST.)', 'Expected Gross Profit (EST.)', 'Estimated ROI %'];
         $ranked = $inv['rows'];
         usort($ranked, fn($a, $b) => $b['score'] <=> $a['score']);
         foreach ($ranked as $m) {
             $rp = $m['purchase'];
-            $headersRow = [
+            $rows[] = [
                 $m['name'],
                 $m['category'],
+                $m['rec']['label'],
+                $m['score'],
+                $m['confidence_label'],
                 $m['units_sold'],
                 round($m['revenue'], 2),
                 round($m['gross_profit'], 2),
                 round($m['margin_pct'], 1),
                 $m['stock'],
-                round($m['avg_daily'], 2),
-                $m['coverage'] >= 9999 ? '' : round($m['coverage'], 0),
-                round($m['growth_pct'], 1),
-                $m['score'],
-                $m['rec'][2] ?? $m['rec'][0],
+                $m['usable_stock'],
+                round((float)$m['calendar_avg'], 2),
+                round((float)$m['forecast'], 2),
+                $m['coverage'] === null ? 'N/A' : round((float)$m['coverage'], 0),
+                $m['growth_pct'] === null ? 'N/A' : round((float)$m['growth_pct'], 1),
                 $rp['recommended_qty'],
-                $rp['est_cost'],
+                round((float)$rp['unit_cost'], 2),
+                $rp['required_investment'],
+                $rp['expected_units'],
                 $rp['est_revenue'],
                 $rp['est_profit'],
-                $rp['est_roi'],
+                $rp['est_roi'] === null ? 'N/A' : $rp['est_roi'],
             ];
-            $rows[] = $headersRow;
         }
         $filename = 'investment-growth-' . $dates['from'] . '-' . $dates['to'];
         break;
