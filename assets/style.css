@@ -895,6 +895,9 @@ input.expiry-bad { border-color: var(--danger); }
 }
 .pos-batch-row:last-child { border-bottom: none; }
 .pos-batch-row:hover { background: var(--bg-600); }
+.pos-med-group.is-clickable { cursor: pointer; }
+.pos-med-group.is-clickable:hover { border-color: var(--border-strong); }
+.pos-med-group.is-clickable:hover .pos-med-header { background: var(--bg-500); }
 .pos-batch-info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .pos-batch-num { font-size: 12px; font-weight: 600; color: var(--text-200); }
 .pos-batch-exp, .pos-batch-stock { font-size: 11px; color: var(--text-300); }

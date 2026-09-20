@@ -511,7 +511,8 @@ function renderGrid(q) {
     any = true;
     const stock = batches.reduce((s, b) => s + b.stock, 0);
     const sub = [g.generic_name, g.strength, g.dosage_form, g.category_name].filter(Boolean).join(' · ');
-    html += `<div class="pos-med-group">
+    const firstBid = (batches.find(b => Number(b.stock) > 0) || {}).batch_id || '';
+    html += `<div class="pos-med-group${firstBid ? ' is-clickable' : ''}"${firstBid ? ` data-first-batch="${firstBid}" onclick="addGroupToCart(this, event)"` : ''}>
       <div class="pos-med-header">
         <div class="pos-med-head-main">
           <span class="pos-med-name">${esc(g.name)}</span>
@@ -540,8 +541,19 @@ function renderGrid(q) {
 }
 
 // ── Cart ─────────────────────────────────────────────────────
+// Clicking anywhere on a product card adds its nearest-expiry in-stock batch;
+// clicking a specific batch row still adds that exact batch.
+function addGroupToCart(el, ev) {
+  if (ev && ev.target && ev.target.closest && ev.target.closest('.pos-batch-row')) return;
+  const bid = el.dataset.firstBatch;
+  if (bid) addBatchToCart(bid);
+}
+
 function addToCart(el) {
-  const bid = el.dataset.batchId;
+  addBatchToCart(el.dataset.batchId);
+}
+
+function addBatchToCart(bid) {
   const b = CATALOG.find(x => String(x.batch_id) === String(bid));
   if (!b) return;
   if (cart[bid]) {
