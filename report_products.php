@@ -242,7 +242,7 @@ renderSidebar();
   </div>
 
   <div class="card">
-    <div class="card-header"><span class="card-title"><i data-lucide="bar-chart" style="width:16px;height:16px;"></i> Product Performance</span></div>
+    <div class="card-header"><span class="card-title"><i data-lucide="chart-bar" style="width:16px;height:16px;"></i> Product Performance</span></div>
     <div class="report-summary-grid">
       <div><span class="report-k">Units Sold</span><span class="report-v"><?= number_format($p['qty_sold'] ?? 0) ?></span></div>
       <div><span class="report-k">Revenue</span><span class="report-v" style="color:var(--accent2);"><?= currency($p['revenue'] ?? 0) ?></span></div>

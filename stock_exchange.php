@@ -1195,7 +1195,7 @@ renderSidebar();
 <?php else: ?>
 
 <div class="stats-grid">
-    <div class="stat-card blue"><div class="stat-icon blue"><i data-lucide="swap-horizontal"></i></div><div><div class="stat-label">Total Exchanges</div><div class="stat-value"><?= number_format((int)$agg['total']) ?></div></div></div>
+    <div class="stat-card blue"><div class="stat-icon blue"><i data-lucide="arrow-right-left"></i></div><div><div class="stat-label">Total Exchanges</div><div class="stat-value"><?= number_format((int)$agg['total']) ?></div></div></div>
     <div class="stat-card blue"><div class="stat-icon blue"><i data-lucide="arrow-up-right"></i></div><div><div class="stat-label">Total Value Given</div><div class="stat-value"><?= currency($givenValueTotal) ?></div></div></div>
     <div class="stat-card green"><div class="stat-icon green"><i data-lucide="arrow-down-left"></i></div><div><div class="stat-label">Total Value Received</div><div class="stat-value"><?= currency($receivedValueTotal) ?></div></div></div>
     <div class="stat-card orange"><div class="stat-icon orange"><i data-lucide="scale"></i></div><div><div class="stat-label">Value Difference</div><div class="stat-value"><?= currency($agg['difference_total']) ?></div></div></div>
@@ -1249,7 +1249,7 @@ renderSidebar();
 
 <div class="card mb-20">
     <div class="card-header">
-        <span class="card-title"><i data-lucide="swap-horizontal"></i> Exchanges</span>
+        <span class="card-title"><i data-lucide="arrow-right-left"></i> Exchanges</span>
         <?php if ($canAdd): ?><a href="stock_exchange.php?action=new" class="btn btn-primary btn-sm"><i data-lucide="plus"></i> New Exchange</a><?php endif; ?>
     </div>
     <div class="table-wrap">

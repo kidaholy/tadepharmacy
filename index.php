@@ -212,7 +212,7 @@ renderSidebar();
     <a href="pos.php"       class="btn btn-primary"><i data-lucide="scan-barcode"></i> New Sale</a>
     <a href="medicines.php?action=add" class="btn btn-ghost"><i data-lucide="plus"></i> Add Medicine</a>
     <a href="purchases.php?action=add" class="btn btn-ghost"><i data-lucide="package-open"></i> Record Purchase</a>
-    <a href="reports.php"   class="btn btn-ghost"><i data-lucide="bar-chart-3"></i> View Reports</a>
+    <a href="reports.php"   class="btn btn-ghost"><i data-lucide="chart-column"></i> View Reports</a>
   </div>
 </div>
 
