@@ -39,6 +39,11 @@ function permissionCatalog(): array {
             'inventory.change_sell'     => 'Change Selling Price',
             'inventory.change_buy'      => 'Change Purchase Price',
             'inventory.adjust'          => 'Stock Adjustment',
+            'inventory.transfer'        => 'Stock Transfer Between Locations',
+            'inventory.exchange'        => 'Stock Exchange With External Pharmacies',
+            'inventory.history'         => 'View Stock Movement History',
+            'locations.manage'          => 'Manage Pharmacy Locations',
+            'pharmacy.manage'           => 'Manage External Pharmacies',
             'inventory.delete'          => 'Delete / Deactivate Inventory',
             'inventory.manage'          => 'Adjust Stock & Batches (legacy)',
         ],
@@ -191,6 +196,8 @@ function seedPermissionsAndRoles(PDO $pdo): void {
             'sales.edit', 'sales.backdate', 'sales.void', 'sales.returns',
             'inventory.edit', 'inventory.change_sell', 'inventory.change_buy',
             'inventory.adjust', 'inventory.delete',
+            'inventory.transfer', 'inventory.exchange', 'inventory.history',
+            'locations.manage', 'pharmacy.manage',
             'reports.export',
         ]);
     }
@@ -198,6 +205,7 @@ function seedPermissionsAndRoles(PDO $pdo): void {
         grantMissingAllows($pdo, $pharmacistRoleId, [
             'purchases.view', 'purchases.manage', 'suppliers.view',
             'inventory.edit', 'inventory.adjust', 'sales.returns',
+            'inventory.transfer', 'inventory.exchange', 'inventory.history',
         ]);
     }
     if ($cashierRoleId) {
@@ -208,7 +216,7 @@ function seedPermissionsAndRoles(PDO $pdo): void {
     if ($staffRoleId) {
         grantMissingAllows($pdo, $staffRoleId, [
             'purchases.view', 'purchases.manage', 'suppliers.view', 'suppliers.manage',
-            'inventory.edit',
+            'inventory.edit', 'inventory.history',
         ]);
     }
 }

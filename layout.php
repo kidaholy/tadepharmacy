@@ -63,7 +63,17 @@ $navDefs = [
             ['page' => 'suppliers_add', 'icon' => 'plus', 'label' => 'New Supplier', 'perm' => 'suppliers.manage', 'href' => 'suppliers.php?action=add'],
         ],
     ],
-    ['page' => 'inventory',     'icon' => 'boxes',             'label' => 'Inventory',     'perm' => 'inventory.view'],
+    [
+        'page' => 'inventory', 'icon' => 'boxes', 'label' => 'Inventory', 'perm' => 'inventory.view',
+        'children' => [
+            ['page' => 'stock_adjustment', 'icon' => 'sliders-horizontal', 'label' => 'Stock Adjustment', 'perm' => 'inventory.adjust'],
+            ['page' => 'stock_transfer', 'icon' => 'truck', 'label' => 'Stock Transfer', 'perm' => 'inventory.transfer'],
+            ['page' => 'stock_exchange', 'icon' => 'swap-horizontal', 'label' => 'Stock Exchange', 'perm' => 'inventory.exchange'],
+            ['page' => 'stock_movement_history', 'icon' => 'history', 'label' => 'Stock Movement History', 'perm' => 'inventory.history'],
+            ['page' => 'locations', 'icon' => 'map-pin', 'label' => 'Locations', 'perm' => 'locations.manage'],
+            ['page' => 'external_pharmacies', 'icon' => 'handshake', 'label' => 'External Pharmacies', 'perm' => 'pharmacy.manage'],
+        ],
+    ],
     ['page' => 'reports',       'icon' => 'bar-chart-3',       'label' => 'Reports',       'perm' => 'reports.view'],
     ['page' => 'landing_cms',   'icon' => 'layout-template',   'label' => 'Landing Page',  'perm' => 'landing.edit'],
     ['page' => 'administrator', 'icon' => 'shield',            'label' => 'Administrator', 'perm' => ['users.manage', 'roles.manage', 'categories.manage']],

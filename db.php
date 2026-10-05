@@ -352,6 +352,8 @@ function initDB(PDO $pdo): void {
     enableBatchDelete($pdo);
     require_once __DIR__ . '/inventory_lib.php';
     initInventorySchema($pdo);
+    require_once __DIR__ . '/exchange_functions.php';
+    initMovementModulesSchema($pdo);
 }
 
 /**
