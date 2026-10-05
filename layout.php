@@ -145,9 +145,13 @@ function renderSidebar(): void {
                     break;
                 }
             }
-            echo '<div class="nav-group' . ($groupActive ? ' is-open is-current' : '') . '">';
+            $subId = 'nav-sub-' . $item['page'];
+            echo '<div class="nav-group' . ($groupActive ? ' is-current' : '') . '" data-group="' . htmlspecialchars($item['page']) . '">';
+            echo '<div class="nav-group-row">';
             $renderLink($item, false);
-            echo '<div class="nav-sub">';
+            echo '<button type="button" class="nav-caret" aria-expanded="true" aria-controls="' . $subId . '" aria-label="Toggle ' . htmlspecialchars($item['label']) . ' submenu"><i data-lucide="chevron-down"></i></button>';
+            echo '</div>';
+            echo '<div class="nav-sub" id="' . $subId . '">';
             foreach ($children as $child) {
                 $renderLink($child, true);
             }

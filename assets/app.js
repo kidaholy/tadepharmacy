@@ -65,6 +65,53 @@ function initPage() {
   });
 }
 
+// Sidebar groups: collapse / expand, remembered per group
+function storedCollapsedNavGroups() {
+  try { return JSON.parse(localStorage.getItem('navCollapsedGroups') || '[]'); } catch (e) { return []; }
+}
+
+function setNavGroupCollapsed(group, collapsed, persist) {
+  if (!group || !group.hasAttribute('data-group')) return;
+  group.classList.toggle('is-collapsed', collapsed);
+  var caret = group.querySelector('.nav-caret');
+  if (caret) caret.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+  if (!persist) return;
+  var key = group.getAttribute('data-group');
+  var list = storedCollapsedNavGroups();
+  var at = list.indexOf(key);
+  if (collapsed && at === -1) list.push(key);
+  if (!collapsed && at !== -1) list.splice(at, 1);
+  try { localStorage.setItem('navCollapsedGroups', JSON.stringify(list)); } catch (e) {}
+}
+
+function initNavGroups() {
+  var saved = storedCollapsedNavGroups();
+  document.querySelectorAll('.nav-group[data-group]').forEach(function (group) {
+    setNavGroupCollapsed(group, saved.indexOf(group.getAttribute('data-group')) !== -1, false);
+  });
+}
+
+document.addEventListener('click', function (e) {
+  var target = e.target;
+  if (!target || typeof target.closest !== 'function') return;
+
+  var caret = target.closest('.nav-caret');
+  if (caret) {
+    var group = caret.closest('.nav-group');
+    if (group) setNavGroupCollapsed(group, !group.classList.contains('is-collapsed'), true);
+    return;
+  }
+
+  // Opening a collapsed section from its heading: expand it before navigating
+  var head = target.closest('.nav-group-row > .nav-item');
+  if (head) {
+    var parent = head.closest('.nav-group');
+    if (parent && parent.classList.contains('is-collapsed')) setNavGroupCollapsed(parent, false, true);
+  }
+});
+
+initNavGroups();
+
 if (document.readyState === 'loading') {
   document.addEventListener('DOMContentLoaded', initPage);
 } else {
