@@ -272,6 +272,18 @@ th,td{border:1px solid #999;padding:5px;text-align:left;}th{background:#eee;}.ri
 }
 ?>
 <?php renderHead($pharmacyName . ' — Stock Adjustment'); ?>
+<style>
+.search-select{position:relative;display:inline-block;}
+.search-select input{padding:8px 10px;width:100%;border:1px solid var(--border-color, #d1d5db);border-radius:6px;font-size:14px;background:var(--bg, #fff);color:var(--text, #0f172a);}
+.search-select input:focus{outline:none;border-color:var(--primary, #2563eb);box-shadow:0 0 0 3px rgba(37,99,235,.15);}
+.search-select-menu{display:none;position:absolute;z-index:50;top:calc(100% + 4px);left:0;right:0;max-height:240px;overflow:auto;border:1px solid var(--border-color, #d1d5db);border-radius:6px;background:var(--bg, #fff);box-shadow:0 8px 20px rgba(0,0,0,.12);}
+.search-select-option{padding:8px 12px;cursor:pointer;font-size:14px;color:var(--text, #0f172a);}
+.search-select-option.is-hover{background:var(--hover-bg, #eef2ff);outline:none;}
+.search-select-option.is-selected{font-weight:600;}
+.search-select-unit{color:var(--text-300, #6b7280);font-size:12px;margin-left:8px;}
+.search-select-empty{padding:10px 12px;color:var(--text-300, #6b7280);font-size:13px;}
+.search-select:focus-within .search-select-menu{display:block;}
+</style>
 <?php renderSidebar(); ?>
 <div class="main-content">
 <?php renderTopbar('Stock Adjustment', 'Correct physical stock without creating purchase or sale'); ?>
@@ -314,12 +326,11 @@ th,td{border:1px solid #999;padding:5px;text-align:left;}th{background:#eee;}.ri
             <div class="form-row">
                 <div class="form-group">
                     <label>Product *</label>
-                    <select name="medicine_id" id="adj-med" required>
-                        <option value="">— Select product —</option>
-                        <?php foreach ($allMeds as $m): ?>
-                        <option value="<?= $m['id'] ?>" <?= $medId === (int)$m['id'] ? 'selected' : '' ?>><?= htmlspecialchars($m['name']) ?></option>
-                        <?php endforeach; ?>
-                    </select>
+                    <div class="search-select" id="adj-med-wrap">
+                        <input type="text" id="adj-med" name="medicine_name_display" autocomplete="off" placeholder="Type to search products…" required aria-label="Search products">
+                        <div class="search-select-menu" id="adj-med-menu" role="listbox" aria-label="Product list"></div>
+                    </div>
+                    <input type="hidden" id="adj-med-id" name="medicine_id" value="<?= $medId ?>">
                 </div>
                 <div class="form-group">
                     <label>Batch <span style="color:var(--text-300);font-weight:400;">(required — exact batch)</span></label>
@@ -481,8 +492,9 @@ document.addEventListener('DOMContentLoaded', function () {
         update();
     });
 
+    var medIdField = document.getElementById('adj-med-id');
     med.addEventListener('change', function () {
-        var id = parseInt(med.value, 10);
+        var id = medIdField ? parseInt(medIdField.value, 10) : 0;
         if (!id) return;
         var xhr = new XMLHttpRequest();
         xhr.open('POST', 'stock_adjustment_ajax.php', true);
@@ -503,5 +515,155 @@ document.addEventListener('DOMContentLoaded', function () {
         };
         xhr.send('medicine_id=' + id + '&act=load_batch');
     });
+
+    // ── Searchable product dropdown ───────────────────────────────────────
+    (function () {
+        var wrap = document.getElementById('adj-med-wrap');
+        var input = document.getElementById('adj-med');
+        var menu = document.getElementById('adj-med-menu');
+        var idField = document.getElementById('adj-med-id');
+        if (!wrap || !input || !menu) return;
+
+        var items = <?= json_encode($allMeds, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?>;
+        var current = <?= json_encode($medId, JSON_HEX_TAG | JSON_HEX_APOS | JSON_HEX_QUOT | JSON_HEX_AMP) ?> || null;
+
+        function render(filter) {
+            var q = (filter || '').toLowerCase().trim();
+            var list = items.filter(function (m) {
+                return !q || m.name.toLowerCase().indexOf(q) !== -1;
+            });
+            if (list.length === 0) {
+                menu.innerHTML = '<div class="search-select-empty">No products found.</div>';
+                return;
+            }
+            menu.innerHTML = list.map(function (m) {
+                var sel = (current && m.id === current) ? ' class="search-select-option is-selected"' : ' class="search-select-option"';
+                return '<div' + sel + ' data-id="' + m.id + '">' +
+                    escapeHtml(m.name) +
+                    (m.unit ? ' <span class="search-select-unit">' + escapeHtml(m.unit) + '</span>' : '') +
+                    '</div>';
+            }).join('');
+        }
+
+        function escapeHtml(s) {
+            return String(s)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function open() {
+            menu.style.display = 'block';
+            var first = menu.querySelector('.search-select-option');
+            if (first) first.classList.add('is-hover');
+        }
+        function close() {
+            menu.style.display = 'none';
+            menu.querySelectorAll('.is-hover').forEach(function (e) { e.classList.remove('is-hover'); });
+        }
+        function setItem(el) {
+            if (!el || !el.dataset || !el.dataset.id) return false;
+            var id = parseInt(el.dataset.id, 10);
+            var m = items.filter(function (x) { return x.id === id; })[0];
+            if (!m) return false;
+            input.value = m.name;
+            idField.value = id;
+            current = id;
+            med.value = id;
+            med.dispatchEvent(new Event('change'));
+            close();
+            input.focus();
+            return true;
+        }
+
+        var hoverIdx = -1;
+        function hoverNext(dir) {
+            var opts = Array.prototype.slice.call(menu.querySelectorAll('.search-select-option:not(.is-selected)'));
+            if (opts.length === 0) opts = Array.prototype.slice.call(menu.querySelectorAll('.search-select-option'));
+            if (opts.length === 0) return;
+            opts.forEach(function (e) { e.classList.remove('is-hover'); });
+            hoverIdx = (hoverIdx + dir + opts.length) % opts.length;
+            opts[hoverIdx].classList.add('is-hover');
+            opts[hoverIdx].scrollIntoView({ block: 'nearest' });
+        }
+        function hoverCurrent() {
+            var opts = Array.prototype.slice.call(menu.querySelectorAll('.search-select-option'));
+            if (opts.length === 0) return;
+            opts.forEach(function (e) { e.classList.remove('is-hover'); });
+            var picked = null;
+            for (var i = 0; i < opts.length; i++) {
+                if (parseInt(opts[i].dataset.id, 10) === current) { picked = opts[i]; break; }
+            }
+            if (!picked && opts.length) picked = opts[0];
+            if (picked) { picked.classList.add('is-hover'); }
+            hoverIdx = opts.indexOf(picked);
+        }
+
+        input.addEventListener('input', function () {
+            render(input.value);
+            if (menu.style.display !== 'block') open();
+            hoverIdx = -1;
+        });
+        input.addEventListener('focus', function () {
+            if (menu.innerHTML.trim() === '') render(input.value);
+            if (items.length && menu.querySelector('.search-select-option')) open();
+        });
+        input.addEventListener('blur', function () {
+            // Delay so a click on a menu option registers first.
+            setTimeout(close, 150);
+        });
+        input.addEventListener('keydown', function (e) {
+            if (menu.style.display !== 'block') {
+                if (e.key === 'ArrowDown' || e.key === 'Enter') {
+                    e.preventDefault();
+                    render(input.value);
+                    open();
+                    hoverNext(1);
+                }
+                return;
+            }
+            if (e.key === 'ArrowDown') { e.preventDefault(); hoverNext(1); }
+            else if (e.key === 'ArrowUp') { e.preventDefault(); hoverNext(-1); }
+            else if (e.key === 'Enter') {
+                e.preventDefault();
+                var hovered = menu.querySelector('.is-hover');
+                if (hovered) { setItem(hovered); }
+                else { var first = menu.querySelector('.search-select-option'); if (first) setItem(first); }
+            }
+            else if (e.key === 'Escape') { e.preventDefault(); close(); input.focus(); }
+            else if (e.key === 'Tab') { close(); }
+        });
+        menu.addEventListener('mousemove', function (e) {
+            var opt = e.target.closest('.search-select-option');
+            if (!opt) return;
+            menu.querySelectorAll('.is-hover').forEach(function (x) { x.classList.remove('is-hover'); });
+            opt.classList.add('is-hover');
+            hoverIdx = Array.prototype.indexOf.call(menu.querySelectorAll('.search-select-option'), opt);
+        });
+        menu.addEventListener('click', function (e) {
+            var opt = e.target.closest('.search-select-option');
+            if (opt) setItem(opt);
+        });
+
+        // Seed initial state from the hidden id field (e.g. ?med=12).
+        if (current) {
+            var seed = items.filter(function (m) { return m.id === current; })[0];
+            if (seed) {
+                input.value = seed.name;
+                med.value = current;
+            }
+            render('');
+            hoverCurrent();
+        } else {
+            render('');
+        }
+        if (current) {
+            setTimeout(function () {
+                if (input.value) { open(); hoverCurrent(); }
+            }, 0);
+        }
+    })();
 });
 </script>
